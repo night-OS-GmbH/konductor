@@ -1,6 +1,6 @@
-# Binaries
-konductor
-konductor-operator
+# Compiled binaries (root only, not cmd/ source directories)
+/konductor
+/konductor-operator
 dist/
 
 # IDE
