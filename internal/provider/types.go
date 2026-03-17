@@ -72,4 +72,13 @@ type CreateNodeOpts struct {
 
 	// PlacementGroupName is the optional placement group for spread scheduling.
 	PlacementGroupName string
+
+	// ImageID is the snapshot/image ID to boot from (e.g., Talos snapshot).
+	ImageID int64
+
+	// ImageLabelSelector finds the image by label if ImageID is 0 (e.g., "os=talos,version=v1.12.5").
+	ImageLabelSelector string
+
+	// PublicNetIPv6Disabled disables IPv6 on the public network interface.
+	PublicNetIPv6Disabled bool
 }

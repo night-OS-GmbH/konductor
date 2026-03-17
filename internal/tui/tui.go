@@ -3,12 +3,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/night-OS-GmbH/konductor/internal/cluster"
+	"github.com/night-OS-GmbH/konductor/internal/cluster/components"
 	"github.com/night-OS-GmbH/konductor/internal/config"
+	"github.com/night-OS-GmbH/konductor/internal/installer"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
 	"github.com/night-OS-GmbH/konductor/internal/tui/styles"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/ctxswitcher"
@@ -18,6 +22,8 @@ import (
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/pods"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/scaling"
 	"github.com/night-OS-GmbH/konductor/pkg/version"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 type tab int
@@ -38,7 +44,7 @@ var tabList = []struct {
 	{"Nodes", tabNodes},
 	{"Namespaces", tabNamespaces},
 	{"Pods", tabPods},
-	{"Scaling", tabScaling},
+	{"Cluster", tabScaling},
 }
 
 type keyMap struct {
@@ -64,7 +70,7 @@ var keys = keyMap{
 	Number2:  key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "nodes")),
 	Number3:  key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "namespaces")),
 	Number4:  key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "pods")),
-	Number5:  key.NewBinding(key.WithKeys("5"), key.WithHelp("5", "scaling")),
+	Number5:  key.NewBinding(key.WithKeys("5"), key.WithHelp("5", "cluster")),
 }
 
 type model struct {
@@ -110,6 +116,7 @@ func (m model) Init() tea.Cmd {
 		return tea.Batch(
 			m.fetchAllData(),
 			m.fetchScalingData(),
+			m.fetchClusterHealth(),
 			m.scheduleTick(),
 		)
 	}
@@ -181,6 +188,124 @@ func (m model) fetchScalingData() tea.Cmd {
 	}
 }
 
+func (m model) fetchClusterHealth() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		clientset := m.client.Clientset()
+		checker := cluster.NewChecker(clientset)
+
+		// Build a dynamic client for component checkers that need it.
+		dynClient, dynErr := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+
+		// Register all known components.
+		checker.AddComponent(components.NewMetricsServer(clientset, dynClient))
+
+		if dynErr == nil {
+			checker.AddComponent(components.NewHetznerCCM(clientset, dynClient))
+			checker.AddComponent(components.NewCertManager(clientset, dynClient))
+		}
+
+		// Register operator component via installer.
+		inst, instErr := installer.NewInstaller(m.client.KubeconfigPath(), m.client.ActiveContext())
+		if instErr == nil {
+			checker.AddComponent(components.NewKonductorOperator(inst, ""))
+		}
+
+		health, err := checker.Check(ctx)
+		if err != nil {
+			return clusterHealthMsg{err: err}
+		}
+
+		return clusterHealthMsg{health: scaling.HealthFromCluster(health)}
+	}
+}
+
+func (m model) installComponent(component string, opts map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		clientset := m.client.Clientset()
+		dynClient, dynErr := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+
+		var err error
+
+		switch component {
+		case "metrics-server":
+			if dynErr != nil {
+				return installResultMsg{component: component, err: dynErr}
+			}
+			comp := components.NewMetricsServer(clientset, dynClient)
+			if opts["action"] == "update" {
+				err = comp.Update(ctx)
+			} else {
+				err = comp.Install(ctx, opts)
+			}
+
+		case "hetzner-ccm":
+			if dynErr != nil {
+				return installResultMsg{component: component, err: dynErr}
+			}
+			comp := components.NewHetznerCCM(clientset, dynClient)
+			if opts["action"] == "update" {
+				err = comp.Update(ctx)
+			} else {
+				err = comp.Install(ctx, opts)
+			}
+
+		case "cert-manager":
+			if dynErr != nil {
+				return installResultMsg{component: component, err: dynErr}
+			}
+			comp := components.NewCertManager(clientset, dynClient)
+			if opts["action"] == "update" {
+				err = comp.Update(ctx)
+			} else {
+				err = comp.Install(ctx, opts)
+			}
+
+		case "konductor-operator":
+			inst, instErr := installer.NewInstaller(m.client.KubeconfigPath(), m.client.ActiveContext())
+			if instErr != nil {
+				return installResultMsg{component: component, err: instErr}
+			}
+			comp := components.NewKonductorOperator(inst, "")
+			if opts["action"] == "update" {
+				err = comp.Update(ctx)
+			} else {
+				// Read talos config from path if provided.
+				if path, ok := opts["talos_config_path"]; ok && path != "" {
+					data, readErr := os.ReadFile(path)
+					if readErr != nil {
+						return installResultMsg{component: component, err: fmt.Errorf("reading talos config: %w", readErr)}
+					}
+					opts["talos_config"] = string(data)
+				}
+				err = comp.Install(ctx, opts)
+			}
+
+		default:
+			err = fmt.Errorf("unknown component: %s", component)
+		}
+
+		return installResultMsg{component: component, err: err}
+	}
+}
+
+// buildDynamicClient creates a dynamic Kubernetes client from kubeconfig.
+func buildDynamicClient(kubeconfigPath, kubeContext string) (dynamic.Interface, error) {
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: kubeContext}
+	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+	restCfg, err := cc.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	return dynamic.NewForConfig(restCfg)
+}
+
 func (m model) scheduleTick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg{}
@@ -225,7 +350,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connected = true
 		m.connErr = nil
 		m.ctxSwitcher.SetContexts(msg.client.AvailableContexts(), msg.client.ActiveContext())
-		return m, m.fetchAllData()
+		return m, tea.Batch(m.fetchAllData(), m.fetchClusterHealth())
 
 	case ctxswitcher.ContextSelectedMsg:
 		kubeconfigPath := ""
@@ -256,6 +381,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case clusterHealthMsg:
+		if msg.err != nil {
+			// Health check failed — don't overwrite other errors.
+		} else {
+			m.scalingView.SetHealthData(msg.health)
+		}
+		return m, nil
+
+	case scaling.InstallComponentMsg:
+		// Spawn background install goroutine.
+		return m, m.installComponent(msg.Component, msg.Opts)
+
+	case installResultMsg:
+		m.scalingView.UpdateWizardProgress(scaling.InstallProgressMsg{
+			Component: msg.component,
+			Done:      true,
+			Err:       msg.err,
+		})
+		// Refresh health data after install.
+		if msg.err == nil && m.client != nil {
+			return m, tea.Batch(m.fetchClusterHealth(), m.fetchScalingData())
+		}
+		return m, nil
+
 	case pods.FetchLogsMsg:
 		return m, m.fetchLogs(msg.Namespace, msg.PodName, msg.Container, msg.TailLines)
 
@@ -266,7 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		var cmds []tea.Cmd
-		cmds = append(cmds, m.fetchAllData(), m.fetchScalingData(), m.scheduleTick())
+		cmds = append(cmds, m.fetchAllData(), m.fetchScalingData(), m.fetchClusterHealth(), m.scheduleTick())
 		// Auto-refresh logs if viewing pod logs.
 		if m.activeTab == tabPods && m.podsView.InLogMode() && m.client != nil {
 			ns, pod, container, tailLines := m.podsView.LogTarget()
@@ -277,6 +426,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
+		// Wizard overlay takes priority over everything.
+		if m.activeTab == tabScaling && m.scalingView.WizardVisible() {
+			var cmd tea.Cmd
+			m.scalingView, cmd = m.scalingView.Update(msg)
+			return m, cmd
+		}
+
 		// Context switcher overlay takes priority.
 		if m.ctxSwitcher.Visible() {
 			var cmd tea.Cmd
@@ -312,7 +468,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeTab = tabScaling
 			return m, nil
 		case key.Matches(msg, keys.Refresh):
-			return m, m.fetchAllData()
+			return m, tea.Batch(m.fetchAllData(), m.fetchClusterHealth())
 		}
 	}
 
@@ -366,6 +522,11 @@ func (m model) View() string {
 		content,
 		footer,
 	)
+
+	// Overlay wizard if visible (takes priority over context switcher).
+	if m.activeTab == tabScaling && m.scalingView.WizardVisible() {
+		return m.scalingView.WizardView(m.width, m.height)
+	}
 
 	// Overlay context switcher if visible.
 	if m.ctxSwitcher.Visible() {
@@ -449,12 +610,18 @@ func (m model) renderFooter() string {
 	case tabNodes:
 		helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}}, helpItems...)
 	case tabNamespaces:
-		helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"enter", "→ pods"}}, helpItems...)
+		helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"enter", "-> pods"}}, helpItems...)
 	case tabPods:
 		if m.podsView.InLogMode() {
 			helpItems = append([]struct{ key, desc string }{{"↑↓", "scroll"}, {"esc", "back"}, {"l", "live"}, {"f", "full"}}, helpItems...)
 		} else {
-			helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"←→", "ns"}, {"s", "sort"}, {"enter", "logs"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"<->", "ns"}, {"s", "sort"}, {"enter", "logs"}}, helpItems...)
+		}
+	case tabScaling:
+		if m.scalingView.WizardVisible() {
+			helpItems = append([]struct{ key, desc string }{{"esc", "cancel"}, {"enter", "confirm"}}, helpItems...)
+		} else {
+			helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"enter", "install"}, {"u", "update"}, {"i", "setup all"}}, helpItems...)
 		}
 	}
 

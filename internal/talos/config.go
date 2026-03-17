@@ -71,3 +71,62 @@ func renderWithReplace(baseConfig string, params WorkerConfigParams) string {
 	result = strings.ReplaceAll(result, "__EXTERNAL_IP__", params.ExternalIP)
 	return result
 }
+
+// PatchConfigForHetzner ensures the worker config has all required Hetzner Cloud
+// settings baked in, so no post-boot patching is needed:
+// - cluster.externalCloudProvider.enabled = true (for Hetzner CCM)
+// - machine.kubelet.nodeIP.validSubnets (use private network for internal traffic)
+// - machine.features.hostDNS (for reliable DNS resolution)
+//
+// This performs a simple YAML-level check and appends missing sections.
+// It works on the raw YAML string to avoid needing a full Talos config parser.
+func PatchConfigForHetzner(config string, privateSubnet string) string {
+	// Ensure externalCloudProvider is enabled.
+	if !strings.Contains(config, "externalCloudProvider") {
+		config = ensureClusterPatch(config, `    externalCloudProvider:
+        enabled: true`)
+	}
+
+	// Ensure kubelet uses private network for node IP if subnet specified.
+	if privateSubnet != "" && !strings.Contains(config, "validSubnets") {
+		config = ensureMachinePatch(config, fmt.Sprintf(`    kubelet:
+        nodeIP:
+            validSubnets:
+                - %s`, privateSubnet))
+	}
+
+	return config
+}
+
+// ensureClusterPatch appends a YAML block under the "cluster:" section.
+func ensureClusterPatch(config, patch string) string {
+	idx := strings.Index(config, "\ncluster:\n")
+	if idx == -1 {
+		// Append at end.
+		return config + "\ncluster:\n" + patch + "\n"
+	}
+	// Insert after "cluster:\n"
+	insertAt := idx + len("\ncluster:\n")
+	return config[:insertAt] + patch + "\n" + config[insertAt:]
+}
+
+// ensureMachinePatch appends a YAML block under the "machine:" section.
+func ensureMachinePatch(config, patch string) string {
+	idx := strings.Index(config, "\nmachine:\n")
+	if idx == -1 {
+		return config + "\nmachine:\n" + patch + "\n"
+	}
+	insertAt := idx + len("\nmachine:\n")
+	return config[:insertAt] + patch + "\n" + config[insertAt:]
+}
+
+// PrepareWorkerConfig takes a raw worker config, applies Hetzner patches,
+// and renders node-specific parameters. This is the single function the
+// operator should call before passing config as user-data.
+func PrepareWorkerConfig(baseConfig string, params WorkerConfigParams, privateSubnet string) (string, error) {
+	// Step 1: Patch for Hetzner (externalCloudProvider, nodeIP subnet).
+	patched := PatchConfigForHetzner(baseConfig, privateSubnet)
+
+	// Step 2: Render node-specific values (hostname, IPs).
+	return RenderWorkerConfig(patched, params)
+}

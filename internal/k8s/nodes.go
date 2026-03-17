@@ -51,6 +51,52 @@ type NodeInfo struct {
 	Unschedulable bool
 }
 
+// GetTalosVersion detects the Talos version running on the cluster by inspecting
+// node OS images. Returns e.g. "v1.11.5". Returns empty string if not a Talos cluster.
+func (c *Client) GetTalosVersion(ctx context.Context) (string, error) {
+	nodeList, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 5})
+	if err != nil {
+		return "", err
+	}
+	for _, node := range nodeList.Items {
+		osImage := node.Status.NodeInfo.OSImage
+		// Talos sets OSImage to "Talos (v1.11.5)" or similar.
+		if ver := parseTalosVersion(osImage); ver != "" {
+			return ver, nil
+		}
+	}
+	return "", nil
+}
+
+// parseTalosVersion extracts the version from an OS image string like "Talos (v1.11.5)".
+func parseTalosVersion(osImage string) string {
+	// Format: "Talos (v1.11.5)"
+	if len(osImage) < 7 {
+		return ""
+	}
+	start := -1
+	for i, c := range osImage {
+		if c == 'v' && i+1 < len(osImage) && osImage[i+1] >= '0' && osImage[i+1] <= '9' {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	// Extract until non-version character.
+	end := start + 1
+	for end < len(osImage) {
+		c := osImage[end]
+		if (c >= '0' && c <= '9') || c == '.' {
+			end++
+		} else {
+			break
+		}
+	}
+	return osImage[start:end]
+}
+
 type NodeCondition struct {
 	Type    string
 	Status  string

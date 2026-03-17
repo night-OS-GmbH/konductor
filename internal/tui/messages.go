@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
+	"github.com/night-OS-GmbH/konductor/internal/tui/views/scaling"
 )
 
 // allDataMsg carries all cluster data fetched in one batch.
@@ -36,4 +37,16 @@ type logsDataMsg struct {
 type scalingDataMsg struct {
 	info *k8s.ScalingInfo
 	err  error
+}
+
+// clusterHealthMsg carries the result of a cluster health check.
+type clusterHealthMsg struct {
+	health *scaling.ClusterHealthData
+	err    error
+}
+
+// installResultMsg carries the result of a component installation.
+type installResultMsg struct {
+	component string
+	err       error
 }

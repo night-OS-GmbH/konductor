@@ -41,16 +41,31 @@ var _ provider.Provider = (*HetznerProvider)(nil)
 // CreateNode provisions a new Hetzner Cloud server with user-data, attaches it to
 // the specified network, and labels it with konductor metadata.
 func (p *HetznerProvider) CreateNode(ctx context.Context, opts provider.CreateNodeOpts) (*provider.ProviderNode, error) {
+	// Resolve the Talos snapshot image.
+	image, err := p.resolveImage(ctx, opts.ImageID, opts.ImageLabelSelector)
+	if err != nil {
+		return nil, fmt.Errorf("resolving image: %w", err)
+	}
+
 	serverOpts := hcloud.ServerCreateOpts{
 		Name: opts.Name,
 		ServerType: &hcloud.ServerType{
 			Name: opts.ServerType,
 		},
+		Image: image,
 		Location: &hcloud.Location{
 			Name: opts.Location,
 		},
 		UserData: opts.UserData,
 		Labels:   mergeLabels(opts.Labels),
+	}
+
+	// Disable IPv6 if requested (avoids Hetzner IPv6 routing issues).
+	if opts.PublicNetIPv6Disabled {
+		serverOpts.PublicNet = &hcloud.ServerCreatePublicNet{
+			EnableIPv4: true,
+			EnableIPv6: false,
+		}
 	}
 
 	// Attach to private network if specified.
@@ -222,6 +237,72 @@ func mergeLabels(labels map[string]string) map[string]string {
 	}
 	merged[LabelManagedBy] = "konductor"
 	return merged
+}
+
+// resolveImage finds a Hetzner image by ID or label selector.
+func (p *HetznerProvider) resolveImage(ctx context.Context, imageID int64, labelSelector string) (*hcloud.Image, error) {
+	if imageID > 0 {
+		image, _, err := p.client.api.Image.GetByID(ctx, imageID)
+		if err != nil {
+			return nil, fmt.Errorf("getting image %d: %w", imageID, err)
+		}
+		if image == nil {
+			return nil, fmt.Errorf("image %d not found", imageID)
+		}
+		return image, nil
+	}
+
+	if labelSelector != "" {
+		images, err := p.client.api.Image.AllWithOpts(ctx, hcloud.ImageListOpts{
+			Type:   []hcloud.ImageType{hcloud.ImageTypeSnapshot},
+			Status: []hcloud.ImageStatus{hcloud.ImageStatusAvailable},
+			ListOpts: hcloud.ListOpts{
+				LabelSelector: labelSelector,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("listing images with selector %q: %w", labelSelector, err)
+		}
+		if len(images) == 0 {
+			return nil, fmt.Errorf("no image found with label selector %q — run 'konductor operator setup-image' first", labelSelector)
+		}
+		// Return the most recent snapshot.
+		latest := images[0]
+		for _, img := range images[1:] {
+			if img.Created.After(latest.Created) {
+				latest = img
+			}
+		}
+		return latest, nil
+	}
+
+	return nil, fmt.Errorf("no image ID or label selector specified — run 'konductor operator setup-image' first")
+}
+
+// FindTalosImage looks for an existing Talos snapshot on Hetzner by label.
+func (p *HetznerProvider) FindTalosImage(ctx context.Context, talosVersion, arch string) (*hcloud.Image, error) {
+	selector := fmt.Sprintf("os=talos,talos-version=%s,arch=%s", talosVersion, arch)
+	images, err := p.client.api.Image.AllWithOpts(ctx, hcloud.ImageListOpts{
+		Type:   []hcloud.ImageType{hcloud.ImageTypeSnapshot},
+		Status: []hcloud.ImageStatus{hcloud.ImageStatusAvailable},
+		ListOpts: hcloud.ListOpts{
+			LabelSelector: selector,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(images) == 0 {
+		return nil, nil
+	}
+	// Return newest.
+	latest := images[0]
+	for _, img := range images[1:] {
+		if img.Created.After(latest.Created) {
+			latest = img
+		}
+	}
+	return latest, nil
 }
 
 // parseProviderID extracts the Hetzner server ID from a provider ID string (format: "hcloud://<serverID>").
