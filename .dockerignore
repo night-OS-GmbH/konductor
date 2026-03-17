@@ -5,6 +5,3 @@
 .idea/
 .vscode/
 .DS_Store
-# Exclude compiled binaries in root only (not cmd/ directories)
-konductor-operator
-!cmd/konductor-operator
