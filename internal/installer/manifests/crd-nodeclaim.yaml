@@ -1,0 +1,205 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodeclaims.konductor.io
+  labels:
+    app.kubernetes.io/managed-by: konductor
+spec:
+  group: konductor.io
+  names:
+    kind: NodeClaim
+    listKind: NodeClaimList
+    plural: nodeclaims
+    singular: nodeclaim
+    shortNames:
+      - nc
+      - nclaim
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Pool
+          type: string
+          jsonPath: .spec.nodePoolRef
+        - name: Provider
+          type: string
+          jsonPath: .spec.provider
+        - name: ServerType
+          type: string
+          jsonPath: .spec.providerConfig.serverType
+        - name: Node
+          type: string
+          jsonPath: .status.nodeName
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            NodeClaim represents a single node provisioning request.
+            Each NodeClaim tracks the lifecycle of one compute node
+            from creation through to deletion.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - nodePoolRef
+                - provider
+                - providerConfig
+                - talos
+              properties:
+                nodePoolRef:
+                  type: string
+                  description: Name of the NodePool that owns this claim.
+                provider:
+                  type: string
+                  description: Infrastructure provider identifier.
+                providerConfig:
+                  type: object
+                  required:
+                    - serverType
+                    - location
+                  properties:
+                    serverType:
+                      type: string
+                      description: Hetzner server type (e.g. "cpx31", "cax41").
+                    location:
+                      type: string
+                      description: Hetzner datacenter location (e.g. "fsn1", "nbg1").
+                    image:
+                      type: string
+                      description: OS image to use.
+                    network:
+                      type: string
+                      description: Hetzner network name or ID.
+                    sshKeyName:
+                      type: string
+                      description: SSH key name registered in Hetzner.
+                    placementGroup:
+                      type: string
+                      description: Hetzner placement group for anti-affinity.
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Additional labels for the Hetzner server.
+                talos:
+                  type: object
+                  required:
+                    - configSecretRef
+                  properties:
+                    configSecretRef:
+                      type: string
+                      description: Name of the Secret containing the Talos machine config.
+                    version:
+                      type: string
+                      description: Desired Talos version.
+                nodeTemplate:
+                  type: object
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    taints:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - key
+                          - effect
+                        properties:
+                          key:
+                            type: string
+                          value:
+                            type: string
+                          effect:
+                            type: string
+                            enum:
+                              - NoSchedule
+                              - PreferNoSchedule
+                              - NoExecute
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Bootstrapping
+                    - Ready
+                    - Draining
+                    - Deleting
+                    - Failed
+                  description: Current lifecycle phase of the claim.
+                providerID:
+                  type: string
+                  description: Cloud-provider identifier of the provisioned server.
+                nodeName:
+                  type: string
+                  description: Kubernetes node name once the node has joined.
+                ips:
+                  type: array
+                  items:
+                    type: string
+                  description: Assigned IP addresses.
+                createdAt:
+                  type: string
+                  format: date-time
+                  description: When the provider resource was created.
+                readyAt:
+                  type: string
+                  format: date-time
+                  description: When the node became Ready in the cluster.
+                failureReason:
+                  type: string
+                  description: Machine-readable reason for failure.
+                failureMessage:
+                  type: string
+                  description: Human-readable description of the failure.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                  description: Detailed status conditions.

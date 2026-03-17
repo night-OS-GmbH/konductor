@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: konductor-system
+  labels:
+    app.kubernetes.io/managed-by: konductor
+    app.kubernetes.io/part-of: konductor

@@ -1,0 +1,95 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: konductor-operator
+  namespace: konductor-system
+  labels:
+    app.kubernetes.io/name: konductor-operator
+    app.kubernetes.io/managed-by: konductor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: konductor-operator
+  labels:
+    app.kubernetes.io/name: konductor-operator
+    app.kubernetes.io/managed-by: konductor
+rules:
+  # Nodes — read, update labels/taints, cordon, delete
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+
+  # Pods — read for drain decisions, delete for orphaned pods
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+
+  # Pod eviction — required for graceful node drain
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+
+  # Events — emit events on NodePool/NodeClaim changes
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Secrets — read Talos config and Hetzner credentials
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+
+  # Namespaces — read for namespace-scoped checks
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+
+  # NodePools — full control over Konductor CRDs
+  - apiGroups: ["konductor.io"]
+    resources: ["nodepools"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["konductor.io"]
+    resources: ["nodepools/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["konductor.io"]
+    resources: ["nodepools/finalizers"]
+    verbs: ["update"]
+
+  # NodeClaims — full control over Konductor CRDs
+  - apiGroups: ["konductor.io"]
+    resources: ["nodeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["konductor.io"]
+    resources: ["nodeclaims/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["konductor.io"]
+    resources: ["nodeclaims/finalizers"]
+    verbs: ["update"]
+
+  # Metrics — read node and pod metrics for scaling decisions
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+
+  # Leases — leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: konductor-operator
+  labels:
+    app.kubernetes.io/name: konductor-operator
+    app.kubernetes.io/managed-by: konductor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: konductor-operator
+subjects:
+  - kind: ServiceAccount
+    name: konductor-operator
+    namespace: konductor-system

@@ -1,0 +1,276 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodepools.konductor.io
+  labels:
+    app.kubernetes.io/managed-by: konductor
+spec:
+  group: konductor.io
+  names:
+    kind: NodePool
+    listKind: NodePoolList
+    plural: nodepools
+    singular: nodepool
+    shortNames:
+      - np
+      - npool
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Provider
+          type: string
+          jsonPath: .spec.provider
+        - name: ServerType
+          type: string
+          jsonPath: .spec.providerConfig.serverType
+        - name: Min
+          type: integer
+          jsonPath: .spec.minNodes
+        - name: Max
+          type: integer
+          jsonPath: .spec.maxNodes
+        - name: Current
+          type: integer
+          jsonPath: .status.currentNodes
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyNodes
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: NodePool defines a pool of auto-scaled worker nodes.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - provider
+                - providerConfig
+                - minNodes
+                - maxNodes
+                - scaling
+                - talos
+              properties:
+                provider:
+                  type: string
+                  description: Infrastructure provider (e.g. "hetzner").
+                providerConfig:
+                  type: object
+                  required:
+                    - serverType
+                    - location
+                  properties:
+                    serverType:
+                      type: string
+                      description: Hetzner server type (e.g. "cpx31", "cax41").
+                    location:
+                      type: string
+                      description: Hetzner datacenter location (e.g. "fsn1", "nbg1").
+                    image:
+                      type: string
+                      description: OS image to use. Defaults to the latest Talos image if empty.
+                    network:
+                      type: string
+                      description: Hetzner network name or ID to attach the server to.
+                    sshKeyName:
+                      type: string
+                      description: Name of the SSH key registered in Hetzner.
+                    placementGroup:
+                      type: string
+                      description: Hetzner placement group for anti-affinity.
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Additional labels applied to the Hetzner server resource.
+                minNodes:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  description: Minimum number of nodes the pool will maintain.
+                maxNodes:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  description: Maximum number of nodes the pool is allowed to scale to.
+                scaling:
+                  type: object
+                  required:
+                    - scaleUp
+                    - scaleDown
+                    - cooldownSeconds
+                  properties:
+                    scaleUp:
+                      type: object
+                      properties:
+                        cpuThresholdPercent:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 100
+                          description: Average cluster CPU usage percent that triggers scale-up.
+                        memoryThresholdPercent:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 100
+                          description: Average cluster memory usage percent that triggers scale-up.
+                        pendingPodsThreshold:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                          description: Number of pending pods that triggers scale-up.
+                        stabilizationWindowSeconds:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                          description: How long the condition must persist before acting.
+                        step:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          description: Number of nodes to add per scale-up action.
+                    scaleDown:
+                      type: object
+                      properties:
+                        cpuThresholdPercent:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 100
+                          description: Average CPU percent below which scale-down is considered.
+                        memoryThresholdPercent:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 100
+                          description: Average memory percent below which scale-down is considered.
+                        stabilizationWindowSeconds:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                          description: How long a node must be underutilized before removal.
+                        step:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          description: Maximum number of nodes to remove per scale-down action.
+                    cooldownSeconds:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                      description: Global cooldown between scaling actions.
+                talos:
+                  type: object
+                  required:
+                    - configSecretRef
+                  properties:
+                    configSecretRef:
+                      type: string
+                      description: Name of the Secret containing the Talos machine config.
+                    version:
+                      type: string
+                      description: Desired Talos version (e.g. "v1.9.3").
+                nodeTemplate:
+                  type: object
+                  properties:
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Labels to apply to created nodes.
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: Annotations to apply to created nodes.
+                    taints:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - key
+                          - effect
+                        properties:
+                          key:
+                            type: string
+                          value:
+                            type: string
+                          effect:
+                            type: string
+                            enum:
+                              - NoSchedule
+                              - PreferNoSchedule
+                              - NoExecute
+                      description: Taints to apply to created nodes.
+            status:
+              type: object
+              properties:
+                currentNodes:
+                  type: integer
+                  format: int32
+                  description: Actual number of nodes currently in the pool.
+                desiredNodes:
+                  type: integer
+                  format: int32
+                  description: Target number of nodes.
+                readyNodes:
+                  type: integer
+                  format: int32
+                  description: Number of nodes in Ready condition.
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Active
+                    - Scaling
+                    - Degraded
+                    - Deleting
+                  description: Current lifecycle phase of the pool.
+                lastScaleTime:
+                  type: string
+                  format: date-time
+                  description: When the last scaling action occurred.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                  description: Detailed status conditions.

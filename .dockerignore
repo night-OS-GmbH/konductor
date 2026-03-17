@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.md
+.github/
+.idea/
+.vscode/
+.DS_Store
+konductor
+konductor-operator
