@@ -151,32 +151,38 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	now := metav1.Now()
 
-	// 6. Execute the decision.
-	switch d.Action {
-	case decision.ScaleUp:
-		if err := r.scaleUp(ctx, &pool, d.Count); err != nil {
-			return ctrl.Result{}, fmt.Errorf("scaling up: %w", err)
-		}
-		pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
-		pool.Status.LastScaleTime = &now
-		r.Engine.Evaluate(*clusterMetrics, scalingCfg) // side-effect: hysteresis records the action timing is handled below
-		log.Info("scale-up initiated", "count", d.Count)
-
-	case decision.ScaleDown:
-		if err := r.scaleDown(ctx, &pool, &claims, d); err != nil {
-			return ctrl.Result{}, fmt.Errorf("scaling down: %w", err)
-		}
-		pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
-		pool.Status.LastScaleTime = &now
-		log.Info("scale-down initiated", "count", d.Count, "targets", d.TargetNodes)
-
-	case decision.NoAction:
-		if pendingClaims > 0 {
+	// 6. Execute the decision (or just log it when paused).
+	if pool.Spec.Scaling.Paused && d.Action != decision.NoAction {
+		log.Info("scaling PAUSED — would execute but skipping",
+			"action", d.Action.String(), "count", d.Count, "reason", d.Reason)
+		pool.Status.Phase = konductorv1alpha1.NodePoolPhaseActive
+		// Still update status so the TUI shows what would happen.
+	} else {
+		switch d.Action {
+		case decision.ScaleUp:
+			if err := r.scaleUp(ctx, &pool, d.Count); err != nil {
+				return ctrl.Result{}, fmt.Errorf("scaling up: %w", err)
+			}
 			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
-		} else if readyClaims < pool.Spec.MinNodes {
-			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseDegraded
-		} else {
-			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseActive
+			pool.Status.LastScaleTime = &now
+			log.Info("scale-up initiated", "count", d.Count)
+
+		case decision.ScaleDown:
+			if err := r.scaleDown(ctx, &pool, &claims, d); err != nil {
+				return ctrl.Result{}, fmt.Errorf("scaling down: %w", err)
+			}
+			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
+			pool.Status.LastScaleTime = &now
+			log.Info("scale-down initiated", "count", d.Count, "targets", d.TargetNodes)
+
+		case decision.NoAction:
+			if pendingClaims > 0 {
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
+			} else if readyClaims < pool.Spec.MinNodes {
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseDegraded
+			} else {
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseActive
+			}
 		}
 	}
 

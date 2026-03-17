@@ -204,7 +204,6 @@ func (m model) fetchClusterHealth() tea.Cmd {
 
 		if dynErr == nil {
 			checker.AddComponent(components.NewHetznerCCM(clientset, dynClient))
-			checker.AddComponent(components.NewCertManager(clientset, dynClient))
 		}
 
 		// Register operator component via installer.
@@ -249,17 +248,6 @@ func (m model) installComponent(component string, opts map[string]string) tea.Cm
 				return installResultMsg{component: component, err: dynErr}
 			}
 			comp := components.NewHetznerCCM(clientset, dynClient)
-			if opts["action"] == "update" {
-				err = comp.Update(ctx)
-			} else {
-				err = comp.Install(ctx, opts)
-			}
-
-		case "cert-manager":
-			if dynErr != nil {
-				return installResultMsg{component: component, err: dynErr}
-			}
-			comp := components.NewCertManager(clientset, dynClient)
 			if opts["action"] == "update" {
 				err = comp.Update(ctx)
 			} else {

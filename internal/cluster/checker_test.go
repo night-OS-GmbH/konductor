@@ -28,7 +28,7 @@ func TestParseTalosVersion(t *testing.T) {
 }
 
 func TestRecommendedVersions(t *testing.T) {
-	expected := []string{"metrics-server", "hetzner-ccm", "cert-manager", "konductor-operator"}
+	expected := []string{"metrics-server", "hetzner-ccm", "konductor-operator"}
 	for _, name := range expected {
 		if _, ok := RecommendedVersions[name]; !ok {
 			t.Errorf("RecommendedVersions missing entry for %q", name)

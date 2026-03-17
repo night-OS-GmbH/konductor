@@ -78,7 +78,7 @@ func (m *MetricsServer) Check(ctx context.Context) (*cluster.ComponentStatus, er
 		}
 	}
 
-	status.NeedsUpdate = status.Version != "" && status.Version != recommended
+	status.NeedsUpdate = status.Version != "" && cluster.VersionOlderThan(status.Version, recommended)
 
 	return status, nil
 }

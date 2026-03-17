@@ -69,6 +69,11 @@ type ScalingBehavior struct {
 	ScaleUp         ScaleUpConfig   `json:"scaleUp"`
 	ScaleDown       ScaleDownConfig `json:"scaleDown"`
 	CooldownSeconds int32           `json:"cooldownSeconds"`
+
+	// Paused stops all scaling actions when true. The operator still collects
+	// metrics and evaluates decisions, but will not create or delete nodes.
+	// Useful for testing, maintenance, or observing behavior before going live.
+	Paused bool `json:"paused,omitempty"`
 }
 
 // ScaleUpConfig controls when and how aggressively the pool scales up.

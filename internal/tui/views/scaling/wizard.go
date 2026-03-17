@@ -260,9 +260,6 @@ func (w WizardModel) viewConfirm(panelW int) string {
 	case "metrics-server":
 		details = append(details, "This will deploy metrics-server for CPU/memory metrics.")
 		details = append(details, "Required for kubectl top, HPA, and the Konductor dashboard.")
-	case "cert-manager":
-		details = append(details, "This will deploy cert-manager for automatic TLS certificate")
-		details = append(details, "provisioning and renewal via Let's Encrypt.")
 	default:
 		details = append(details, "This will install "+w.component+" into your cluster.")
 	}

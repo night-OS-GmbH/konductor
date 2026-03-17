@@ -73,7 +73,7 @@ func (h *HetznerCCM) Check(ctx context.Context) (*cluster.ComponentStatus, error
 		}
 	}
 
-	status.NeedsUpdate = status.Version != "" && status.Version != recommended
+	status.NeedsUpdate = status.Version != "" && cluster.VersionOlderThan(status.Version, recommended)
 
 	return status, nil
 }
