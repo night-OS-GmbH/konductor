@@ -36,10 +36,10 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 
-  # Secrets — read Talos config and Hetzner credentials
+  # Secrets — read/watch Talos config and Hetzner credentials
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get"]
+    verbs: ["get", "list", "watch"]
 
   # Namespaces — read for namespace-scoped checks
   - apiGroups: [""]

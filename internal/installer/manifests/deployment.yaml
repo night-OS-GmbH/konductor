@@ -23,6 +23,7 @@ spec:
       containers:
         - name: operator
           image: {{ .Image }}
+          imagePullPolicy: Always
           args:
             - operator
             - --namespace={{ .Namespace }}

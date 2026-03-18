@@ -211,8 +211,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
-		// If operator installed and no pools, trigger import detection.
-		if m.scaling != nil && m.scaling.Installed && len(m.scaling.Pools) == 0 {
+		// If operator installed, trigger import detection.
+		if m.scaling != nil && m.scaling.Installed {
 			m.wizard = NewImportWizard()
 			return m, func() tea.Msg { return ImportNodesMsg{} }
 		}
