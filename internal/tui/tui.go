@@ -22,6 +22,9 @@ import (
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/pods"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/scaling"
 	"github.com/night-OS-GmbH/konductor/pkg/version"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -282,6 +285,70 @@ func (m model) installComponent(component string, opts map[string]string) tea.Cm
 	}
 }
 
+func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		dynClient, err := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+		if err != nil {
+			return installResultMsg{component: "nodepool", err: err}
+		}
+
+		nodePool := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "konductor.io/v1alpha1",
+				"kind":       "NodePool",
+				"metadata": map[string]interface{}{
+					"name": "default-workers",
+				},
+				"spec": map[string]interface{}{
+					"provider": "hetzner",
+					"providerConfig": map[string]interface{}{
+						"serverType": msg.ServerType,
+						"location":   msg.Location,
+					},
+					"minNodes": int64(msg.MinNodes),
+					"maxNodes": int64(msg.MaxNodes),
+					"scaling": map[string]interface{}{
+						"paused": msg.Paused,
+						"scaleUp": map[string]interface{}{
+							"cpuThresholdPercent":        int64(80),
+							"memoryThresholdPercent":     int64(80),
+							"pendingPodsThreshold":       int64(1),
+							"stabilizationWindowSeconds": int64(60),
+							"step":                       int64(1),
+						},
+						"scaleDown": map[string]interface{}{
+							"cpuThresholdPercent":        int64(30),
+							"memoryThresholdPercent":     int64(30),
+							"stabilizationWindowSeconds": int64(600),
+							"step":                       int64(1),
+						},
+						"cooldownSeconds": int64(300),
+					},
+					"talos": map[string]interface{}{
+						"configSecretRef": "talos-worker-config",
+					},
+				},
+			},
+		}
+
+		gvr := schema.GroupVersionResource{
+			Group:    "konductor.io",
+			Version:  "v1alpha1",
+			Resource: "nodepools",
+		}
+
+		_, err = dynClient.Resource(gvr).Create(ctx, nodePool, metav1.CreateOptions{})
+		if err != nil {
+			return installResultMsg{component: "nodepool", err: fmt.Errorf("creating NodePool: %w", err)}
+		}
+
+		return installResultMsg{component: "nodepool", err: nil}
+	}
+}
+
 // buildDynamicClient creates a dynamic Kubernetes client from kubeconfig.
 func buildDynamicClient(kubeconfigPath, kubeContext string) (dynamic.Interface, error) {
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
@@ -392,6 +459,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.fetchClusterHealth(), m.fetchScalingData())
 		}
 		return m, nil
+
+	case scaling.CreateNodePoolMsg:
+		return m, m.createNodePool(msg)
 
 	case pods.FetchLogsMsg:
 		return m, m.fetchLogs(msg.Namespace, msg.PodName, msg.Container, msg.TailLines)

@@ -38,6 +38,15 @@ type InstallComponentMsg struct {
 	Opts      map[string]string
 }
 
+// CreateNodePoolMsg is emitted when the user confirms NodePool creation.
+type CreateNodePoolMsg struct {
+	ServerType string
+	Location   string
+	MinNodes   int32
+	MaxNodes   int32
+	Paused     bool
+}
+
 // InstallProgressMsg reports progress/completion of a component installation.
 type InstallProgressMsg struct {
 	Component string
@@ -138,10 +147,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("u"))):
-		// Update selected component if outdated.
+		// Update/reinstall selected component (works for running, outdated, degraded).
 		if m.selected < len(components) {
 			comp := components[m.selected]
-			if comp.Status == "outdated" {
+			if comp.Status == "running" || comp.Status == "outdated" || comp.Status == "degraded" {
 				return m, func() tea.Msg {
 					return InstallComponentMsg{
 						Component: comp.Name,
@@ -149,6 +158,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 			}
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n"))):
+		// Create NodePool — only when operator is installed but no pool exists.
+		if m.scaling != nil && m.scaling.Installed && m.scaling.Pool == nil {
+			m.wizard = NewNodePoolWizard()
+			return m, nil
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
 		// Setup all: install all missing components.
@@ -408,10 +423,9 @@ func (m Model) viewNoPool(panelW, height int) string {
 		"",
 		styles.HealthyStyle.Render("● Operator installed"),
 		"",
-		lipgloss.NewStyle().Foreground(styles.ColorTextDim).Render("No NodePool configured yet. Create one with:"),
+		lipgloss.NewStyle().Foreground(styles.ColorTextDim).Render("No NodePool configured yet."),
 		"",
-		lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true).Render(
-			"  kubectl apply -f nodepool.yaml"),
+		lipgloss.NewStyle().Foreground(styles.ColorText).Render("Press "+styles.KeyStyle.Render("n")+" to create a NodePool."),
 	)
 	return styles.PanelStyle.Width(panelW).Render(content)
 }

@@ -17,6 +17,12 @@ const (
 	stepConfigPath                   // For operator: enter config path
 	stepInstalling                   // Progress indicator
 	stepDone                         // Result display
+
+	// NodePool wizard steps.
+	stepNPServerType  // Select server type
+	stepNPLocation    // Select location
+	stepNPMinMax      // Set min/max nodes
+	stepNPConfirm     // Review and confirm
 )
 
 // WizardModel manages the state of the component installation wizard overlay.
@@ -34,6 +40,14 @@ type WizardModel struct {
 	progressMsg string
 	progressErr error
 	done        bool
+
+	// NodePool wizard state.
+	npServerType string
+	npLocation   string
+	npMinNodes   string
+	npMaxNodes   string
+	npPaused     bool
+	npField      int // which field is being edited (0=serverType, 1=location, 2=min, 3=max)
 }
 
 // NewWizard creates a new wizard for installing the given component.
@@ -79,6 +93,10 @@ func (w WizardModel) Update(msg tea.Msg) (WizardModel, tea.Cmd) {
 		return w, nil
 	case stepDone:
 		return w.updateDone(keyMsg)
+	case stepNPServerType, stepNPLocation, stepNPMinMax:
+		return w.updateNodePool(keyMsg)
+	case stepNPConfirm:
+		return w.updateNPConfirm(keyMsg)
 	}
 
 	return w, nil
@@ -219,6 +237,10 @@ func (w WizardModel) View(width, height int) string {
 		content = w.viewInstalling(panelW)
 	case stepDone:
 		content = w.viewDone(panelW)
+	case stepNPServerType, stepNPLocation, stepNPMinMax:
+		content = w.viewNodePoolForm(panelW)
+	case stepNPConfirm:
+		content = w.viewNPConfirm(panelW)
 	}
 
 	panel := lipgloss.NewStyle().
@@ -425,6 +447,224 @@ func (w WizardModel) viewDone(panelW int) string {
 		"",
 		dim.Render("enter/esc close"),
 	}, "\n")
+}
+
+// --- NodePool Wizard ---
+
+// NewNodePoolWizard creates a wizard for creating a new NodePool.
+func NewNodePoolWizard() *WizardModel {
+	return &WizardModel{
+		visible:      true,
+		component:    "nodepool",
+		step:         stepNPServerType,
+		npServerType: "cpx31",
+		npLocation:   "nbg1",
+		npMinNodes:   "3",
+		npMaxNodes:   "10",
+		npPaused:     true, // Safe default: start paused.
+	}
+}
+
+func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		w.visible = false
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("tab", "down", "j"))):
+		if w.npField < 4 {
+			w.npField++
+		}
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab", "up", "k"))):
+		if w.npField > 0 {
+			w.npField--
+		}
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+		if w.npField == 4 {
+			// Toggle paused.
+			w.npPaused = !w.npPaused
+			return w, nil
+		}
+		// Move to confirm.
+		w.step = stepNPConfirm
+		w.cursor = 0
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
+		w.deleteFieldChar()
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
+		if w.npField == 4 {
+			w.npPaused = !w.npPaused
+			return w, nil
+		}
+	}
+
+	// Character input for text fields.
+	if len(msg.Runes) > 0 && w.npField < 4 {
+		w.appendFieldChar(string(msg.Runes))
+	}
+
+	return w, nil
+}
+
+func (w *WizardModel) appendFieldChar(ch string) {
+	switch w.npField {
+	case 0:
+		w.npServerType += ch
+	case 1:
+		w.npLocation += ch
+	case 2:
+		w.npMinNodes += ch
+	case 3:
+		w.npMaxNodes += ch
+	}
+}
+
+func (w *WizardModel) deleteFieldChar() {
+	switch w.npField {
+	case 0:
+		if len(w.npServerType) > 0 {
+			w.npServerType = w.npServerType[:len(w.npServerType)-1]
+		}
+	case 1:
+		if len(w.npLocation) > 0 {
+			w.npLocation = w.npLocation[:len(w.npLocation)-1]
+		}
+	case 2:
+		if len(w.npMinNodes) > 0 {
+			w.npMinNodes = w.npMinNodes[:len(w.npMinNodes)-1]
+		}
+	case 3:
+		if len(w.npMaxNodes) > 0 {
+			w.npMaxNodes = w.npMaxNodes[:len(w.npMaxNodes)-1]
+		}
+	}
+}
+
+func (w WizardModel) updateNPConfirm(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		w.step = stepNPServerType
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("y", "enter"))):
+		w.step = stepInstalling
+		w.progressMsg = "Creating NodePool..."
+
+		minN := parseInt32(w.npMinNodes, 3)
+		maxN := parseInt32(w.npMaxNodes, 10)
+
+		return w, func() tea.Msg {
+			return CreateNodePoolMsg{
+				ServerType: w.npServerType,
+				Location:   w.npLocation,
+				MinNodes:   minN,
+				MaxNodes:   maxN,
+				Paused:     w.npPaused,
+			}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
+		w.visible = false
+		return w, nil
+	}
+	return w, nil
+}
+
+func (w WizardModel) viewNodePoolForm(panelW int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
+	cursor := lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true).Render("_")
+
+	title := bright.Bold(true).Render("Create NodePool")
+
+	fields := []struct {
+		label string
+		value string
+	}{
+		{"Server Type", w.npServerType},
+		{"Location", w.npLocation},
+		{"Min Nodes", w.npMinNodes},
+		{"Max Nodes", w.npMaxNodes},
+	}
+
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("Configure your autoscaling node pool."))
+	lines = append(lines, dim.Render("Scaling starts in paused (observe-only) mode."))
+	lines = append(lines, "")
+
+	labelW := 14
+	for i, f := range fields {
+		label := lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorTextDim).Render(f.label + ":")
+		val := f.value
+		if i == w.npField {
+			val = bright.Render(val) + cursor
+			label = lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorPrimary).Bold(true).Render(f.label + ":")
+		} else {
+			val = bright.Render(val)
+		}
+		lines = append(lines, "  "+label+" "+val)
+	}
+
+	// Paused toggle.
+	pausedLabel := lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorTextDim).Render("Paused:")
+	var pausedVal string
+	if w.npPaused {
+		pausedVal = styles.HealthyStyle.Render("[x]") + " " + dim.Render("observe-only, no scaling actions")
+	} else {
+		pausedVal = dim.Render("[ ]") + " " + styles.WarningStyle.Render("live — scaling actions will execute")
+	}
+	if w.npField == 4 {
+		pausedLabel = lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorPrimary).Bold(true).Render("Paused:")
+	}
+	lines = append(lines, "  "+pausedLabel+" "+pausedVal)
+
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("tab/j/k navigate  enter confirm  space toggle  esc cancel"))
+
+	return strings.Join(lines, "\n")
+}
+
+func (w WizardModel) viewNPConfirm(panelW int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
+
+	title := bright.Bold(true).Render("Create NodePool?")
+
+	var modeStr string
+	if w.npPaused {
+		modeStr = styles.HealthyStyle.Render("Paused (observe-only)")
+	} else {
+		modeStr = styles.WarningStyle.Render("Live (scaling active)")
+	}
+
+	lines := []string{
+		title,
+		"",
+		dim.Render("Server Type:  ") + bright.Render(w.npServerType),
+		dim.Render("Location:     ") + bright.Render(w.npLocation),
+		dim.Render("Min Nodes:    ") + bright.Render(w.npMinNodes),
+		dim.Render("Max Nodes:    ") + bright.Render(w.npMaxNodes),
+		dim.Render("Mode:         ") + modeStr,
+		"",
+		dim.Render("y/enter create  n/esc cancel"),
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func parseInt32(s string, fallback int32) int32 {
+	var result int32
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			result = result*10 + int32(c-'0')
+		}
+	}
+	if result == 0 {
+		return fallback
+	}
+	return result
 }
 
 // maskToken replaces all but the last 4 characters of a token with asterisks.
