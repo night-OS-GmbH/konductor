@@ -68,10 +68,10 @@ rules:
     resources: ["nodeclaims/finalizers"]
     verbs: ["update"]
 
-  # Metrics — read node and pod metrics for scaling decisions
+  # Metrics — read/watch node and pod metrics for scaling decisions
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes", "pods"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
 
   # Leases — leader election
   - apiGroups: ["coordination.k8s.io"]

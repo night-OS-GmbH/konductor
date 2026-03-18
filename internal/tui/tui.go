@@ -620,34 +620,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// When a view is capturing text input, only allow quit and let
+		// everything else pass through to the active tab.
+		inputActive := (m.activeTab == tabScaling && (m.scalingView.InPoolEdit() || m.scalingView.WizardVisible()))
+
 		switch {
 		case key.Matches(msg, keys.Quit):
+			if inputActive {
+				// Don't quit during text input — let 'q' be typed.
+				break
+			}
 			return m, tea.Quit
 		case key.Matches(msg, keys.Context):
+			if inputActive {
+				break
+			}
 			m.ctxSwitcher.Show()
 			return m, nil
 		case key.Matches(msg, keys.Tab):
+			if inputActive {
+				break
+			}
 			m.activeTab = tab((int(m.activeTab) + 1) % len(tabList))
 			return m, nil
 		case key.Matches(msg, keys.ShiftTab):
+			if inputActive {
+				break
+			}
 			m.activeTab = tab((int(m.activeTab) - 1 + len(tabList)) % len(tabList))
 			return m, nil
-		case key.Matches(msg, keys.Number1):
-			m.activeTab = tabDashboard
-			return m, nil
-		case key.Matches(msg, keys.Number2):
-			m.activeTab = tabNodes
-			return m, nil
-		case key.Matches(msg, keys.Number3):
-			m.activeTab = tabNamespaces
-			return m, nil
-		case key.Matches(msg, keys.Number4):
-			m.activeTab = tabPods
-			return m, nil
-		case key.Matches(msg, keys.Number5):
-			m.activeTab = tabScaling
+		case key.Matches(msg, keys.Number1), key.Matches(msg, keys.Number2),
+			key.Matches(msg, keys.Number3), key.Matches(msg, keys.Number4),
+			key.Matches(msg, keys.Number5):
+			if inputActive {
+				break // Let numbers pass to the edit field.
+			}
+			switch {
+			case key.Matches(msg, keys.Number1):
+				m.activeTab = tabDashboard
+			case key.Matches(msg, keys.Number2):
+				m.activeTab = tabNodes
+			case key.Matches(msg, keys.Number3):
+				m.activeTab = tabNamespaces
+			case key.Matches(msg, keys.Number4):
+				m.activeTab = tabPods
+			case key.Matches(msg, keys.Number5):
+				m.activeTab = tabScaling
+			}
 			return m, nil
 		case key.Matches(msg, keys.Refresh):
+			if inputActive {
+				break
+			}
 			return m, tea.Batch(m.fetchAllData(), m.fetchClusterHealth())
 		}
 	}
