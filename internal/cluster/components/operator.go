@@ -80,10 +80,17 @@ func (k *KonductorOperator) Install(ctx context.Context, opts map[string]string)
 	return k.installer.Install(ctx, installOpts)
 }
 
-// Update reinstalls the operator with the latest image.
+// Update reinstalls the operator with the latest image while preserving
+// existing secrets. It reads the current secret values from the cluster
+// before reapplying manifests.
 func (k *KonductorOperator) Update(ctx context.Context) error {
+	// Read existing secrets so we don't overwrite them with empty values.
+	token, talosConfig, _ := k.installer.ReadSecrets(ctx, k.namespace)
+
 	return k.installer.Install(ctx, installer.InstallOptions{
-		Namespace: k.namespace,
-		Image:     installer.DefaultImage,
+		Namespace:   k.namespace,
+		Image:       installer.DefaultImage,
+		HCloudToken: token,
+		TalosConfig: talosConfig,
 	})
 }

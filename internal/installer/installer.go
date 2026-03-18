@@ -144,6 +144,19 @@ func (i *Installer) ActiveContext() string {
 	return i.context
 }
 
+// ReadSecrets reads the existing Konductor secrets from the cluster.
+// Returns empty strings if the secret doesn't exist.
+func (i *Installer) ReadSecrets(ctx context.Context, namespace string) (hcloudToken, talosConfig string, err error) {
+	if namespace == "" {
+		namespace = DefaultNamespace
+	}
+	secret, err := i.clientset.CoreV1().Secrets(namespace).Get(ctx, DefaultSecretName, metav1.GetOptions{})
+	if err != nil {
+		return "", "", err
+	}
+	return string(secret.Data["hcloud-token"]), string(secret.Data["talos-worker-config"]), nil
+}
+
 // Install deploys the Konductor operator to the cluster.
 // It applies manifests in order: namespace, CRDs, RBAC, secrets, deployment.
 func (i *Installer) Install(ctx context.Context, opts InstallOptions) error {
