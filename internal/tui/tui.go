@@ -800,14 +800,12 @@ func (m model) renderFooter() string {
 	case tabScaling:
 		if m.scalingView.WizardVisible() {
 			helpItems = append([]struct{ key, desc string }{{"esc", "cancel"}, {"enter", "confirm"}}, helpItems...)
+		} else if m.scalingView.InPoolEdit() {
+			helpItems = append([]struct{ key, desc string }{{"tab", "field"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}}, helpItems...)
 		} else if m.scalingView.InPoolDetail() {
-			if m.scalingView.InPoolEdit() {
-				helpItems = append([]struct{ key, desc string }{{"tab", "field"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}}, helpItems...)
-			} else {
-				helpItems = append([]struct{ key, desc string }{{"e", "edit"}, {"esc", "back"}}, helpItems...)
-			}
+			helpItems = append([]struct{ key, desc string }{{"e", "edit"}, {"esc", "back"}}, helpItems...)
 		} else {
-			helpItems = append([]struct{ key, desc string }{{"tab", "panel"}, {"j/k", "select"}, {"enter", "detail"}, {"i", "import"}, {"n", "new"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"j/k", "select"}, {"enter", "detail"}, {"s", "settings"}, {"i", "import"}, {"n", "new"}}, helpItems...)
 		}
 	}
 

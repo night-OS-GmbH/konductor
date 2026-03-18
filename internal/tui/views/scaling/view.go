@@ -211,27 +211,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m.updatePoolDetail(keyMsg)
 	}
 
-	// Tab switches focus between panels.
-	if key.Matches(keyMsg, key.NewBinding(key.WithKeys("tab"))) {
-		if m.focus == focusHealth {
-			m.focus = focusPools
-		} else {
-			m.focus = focusHealth
-		}
-		return m, nil
+	// Settings overlay.
+	if m.focus == focusPools {
+		// We're in settings overlay — navigate components.
+		return m.updateSettingsPanel(keyMsg)
 	}
 
-	// Route to focused panel.
-	if m.focus == focusPools {
-		return m.updatePoolList(keyMsg)
-	}
-	return m.updateHealthPanel(keyMsg)
+	// Main pool list navigation.
+	return m.updatePoolList(keyMsg)
 }
 
-func (m Model) updateHealthPanel(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) updateSettingsPanel(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 	components := m.componentList()
 
 	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc", "s"))):
+		m.focus = focusHealth // Back to main pool view.
+		return m, nil
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("j", "down"))):
 		if m.selected < len(components)-1 {
 			m.selected++
@@ -260,17 +256,6 @@ func (m Model) updateHealthPanel(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 				}
 			}
 		}
-	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
-		if m.scaling != nil && m.scaling.Installed {
-			m.wizard = NewImportWizard()
-			return m, func() tea.Msg { return ImportNodesMsg{} }
-		}
-		for _, comp := range components {
-			if comp.Status == "not_installed" && comp.Installable {
-				m.wizard = NewWizard(comp.Name)
-				return m, nil
-			}
-		}
 	}
 	return m, nil
 }
@@ -294,6 +279,11 @@ func (m Model) updatePoolList(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.selectedPool < len(pools) {
 			m.poolMode = poolModeDetail
 		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("s"))):
+		// Open settings overlay for component management.
+		m.focus = focusPools
+		m.selected = 0
+		return m, nil
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n"))):
 		if m.scaling.Installed {
 			m.wizard = NewNodePoolWizard()
@@ -447,16 +437,74 @@ func (m Model) View(width, height int) string {
 			styles.CriticalStyle.Render("Error: " + m.err.Error()))
 	}
 
-	leftW := (width - 3) / 2
-	rightW := width - leftW - 3
+	contentW := width - 2
 
-	leftPanel := m.viewHealthPanel(leftW, height)
-	rightPanel := m.viewScalingPanel(rightW, height)
+	// Top: compact health info bar (not navigable).
+	healthBar := m.viewHealthBar(contentW)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, " ", rightPanel)
+	// Main: Pool content (navigable).
+	mainHeight := height - lipgloss.Height(healthBar) - 3
+	if mainHeight < 5 {
+		mainHeight = 5
+	}
+	mainContent := m.viewScalingPanel(contentW, mainHeight)
+
+	return lipgloss.JoinVertical(lipgloss.Left, healthBar, mainContent)
 }
 
-// --- Health Panel (Left) ---
+// --- Health Bar (compact, top) ---
+
+func (m Model) viewHealthBar(width int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+
+	if m.health == nil {
+		return lipgloss.NewStyle().Foreground(styles.ColorTextDim).Width(width).Padding(0, 1).Render(
+			"Checking cluster health...")
+	}
+
+	var parts []string
+
+	// Versions.
+	if m.health.K8sVersion != "" {
+		parts = append(parts, dim.Render("K8s ")+lipgloss.NewStyle().Foreground(styles.ColorText).Render(m.health.K8sVersion))
+	}
+	if m.health.TalosVersion != "" {
+		parts = append(parts, dim.Render("Talos ")+lipgloss.NewStyle().Foreground(styles.ColorText).Render(m.health.TalosVersion))
+	}
+
+	// Component summary.
+	components := m.health.Components
+	var healthy, issues int
+	var warnings []string
+	for _, c := range components {
+		if c.Status == "running" {
+			healthy++
+		} else {
+			issues++
+			switch c.Status {
+			case "not_installed":
+				warnings = append(warnings, styles.CriticalStyle.Render("missing: "+c.Name))
+			case "outdated":
+				warnings = append(warnings, styles.WarningStyle.Render("outdated: "+c.Name))
+			case "degraded":
+				warnings = append(warnings, styles.CriticalStyle.Render("degraded: "+c.Name))
+			}
+		}
+	}
+
+	if issues == 0 {
+		parts = append(parts, styles.HealthyStyle.Render(fmt.Sprintf("%d/%d components ok", healthy, len(components))))
+	} else {
+		parts = append(parts, styles.WarningStyle.Render(fmt.Sprintf("%d/%d components ok", healthy, len(components))))
+		parts = append(parts, warnings...)
+		parts = append(parts, dim.Render("("+styles.KeyStyle.Render("s")+" settings)"))
+	}
+
+	line := strings.Join(parts, dim.Render("  ·  "))
+	return lipgloss.NewStyle().Width(width).Padding(0, 1).Render(line)
+}
+
+// --- Health Panel (used by settings overlay) ---
 
 func (m Model) viewHealthPanel(panelW, height int) string {
 	if m.health == nil {
@@ -633,6 +681,11 @@ func (m Model) renderComponentRow(comp ComponentDisplay, nameW int, selected boo
 // --- Scaling Panel (Right) ---
 
 func (m Model) viewScalingPanel(panelW, height int) string {
+	// Settings overlay (component management).
+	if m.focus == focusPools {
+		return m.viewSettingsPanel(panelW, height)
+	}
+
 	// Operator not installed.
 	if m.scaling == nil || !m.scaling.Installed {
 		return m.viewNotInstalled(panelW, height)
@@ -644,6 +697,39 @@ func (m Model) viewScalingPanel(panelW, height int) string {
 	}
 
 	return m.viewMultiPoolDashboard(panelW, height)
+}
+
+func (m Model) viewSettingsPanel(panelW, height int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	components := m.componentList()
+
+	title := styles.TitleStyle.Render("Cluster Components")
+
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	if len(components) == 0 {
+		lines = append(lines, dim.Render("Checking components..."))
+	} else {
+		nameW := panelW - 12
+		if nameW < 20 {
+			nameW = 20
+		}
+		for i, comp := range components {
+			selected := i == m.selected
+			lines = append(lines, m.renderComponentRow(comp, nameW, selected))
+			if selected && comp.Description != "" {
+				lines = append(lines, dim.Render("  "+comp.Description))
+			}
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("j/k select  enter install  u update  esc/s back"))
+
+	content := strings.Join(lines, "\n")
+	return styles.PanelStyle.Width(panelW).Render(content)
 }
 
 func (m Model) viewNotInstalled(panelW, height int) string {
@@ -770,18 +856,7 @@ func (m Model) viewPoolList(panelW, height int) string {
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, dim.Render("h/l select pool  n new pool"))
-
-	// Divider.
-	lines = append(lines, "")
-	lines = append(lines, dim.Render(strings.Repeat("─", panelW-6)))
-	lines = append(lines, "")
-
-	// Show details for the selected pool.
-	if m.selectedPool < len(pools) {
-		poolDetail := m.viewPoolDetail(pools[m.selectedPool], panelW)
-		lines = append(lines, poolDetail...)
-	}
+	lines = append(lines, dim.Render("j/k select  enter detail  n new  i import"))
 
 	content := strings.Join(lines, "\n")
 	return styles.PanelStyle.Width(panelW).Render(content)
