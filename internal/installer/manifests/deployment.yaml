@@ -28,10 +28,10 @@ spec:
             - --namespace={{ .Namespace }}
           ports:
             - name: health
-              containerPort: 8081
+              containerPort: 8080
               protocol: TCP
             - name: metrics
-              containerPort: 8080
+              containerPort: 8081
               protocol: TCP
           env:
             - name: HCLOUD_TOKEN
