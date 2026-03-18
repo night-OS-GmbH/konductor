@@ -271,24 +271,36 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 			},
 		}
 
-		created, err := dynClient.Resource(nodeClaimGVR).Create(ctx, claimObj, metav1.CreateOptions{})
+		_, err = dynClient.Resource(nodeClaimGVR).Create(ctx, claimObj, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating NodeClaim for node %q: %w", node.Name, err)
 		}
 
 		// Status must be set separately via the /status sub-resource.
 		// Kubernetes ignores status fields during a normal Create.
-		created.Object["status"] = map[string]interface{}{
-			"phase":      "Ready",
-			"providerID": node.ProviderID,
-			"nodeName":   node.Name,
-			"readyAt":    now,
-			"createdAt":  now,
+		// Retry with fresh ResourceVersion in case the operator modified the object.
+		for retry := 0; retry < 3; retry++ {
+			fresh, getErr := dynClient.Resource(nodeClaimGVR).Get(ctx, claimName, metav1.GetOptions{})
+			if getErr != nil {
+				return fmt.Errorf("fetching NodeClaim for status update %q: %w", node.Name, getErr)
+			}
+			fresh.Object["status"] = map[string]interface{}{
+				"phase":      "Ready",
+				"providerID": node.ProviderID,
+				"nodeName":   node.Name,
+				"readyAt":    now,
+				"createdAt":  now,
+			}
+			if node.InternalIP != "" {
+				fresh.Object["status"].(map[string]interface{})["ips"] = []interface{}{node.InternalIP}
+			}
+			_, err = dynClient.Resource(nodeClaimGVR).UpdateStatus(ctx, fresh, metav1.UpdateOptions{})
+			if err == nil {
+				break
+			}
+			// Conflict — retry with fresh version.
+			time.Sleep(200 * time.Millisecond)
 		}
-		if node.InternalIP != "" {
-			created.Object["status"].(map[string]interface{})["ips"] = []interface{}{node.InternalIP}
-		}
-		_, err = dynClient.Resource(nodeClaimGVR).UpdateStatus(ctx, created, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("setting NodeClaim status for node %q: %w", node.Name, err)
 		}
