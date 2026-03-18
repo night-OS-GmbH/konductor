@@ -13,7 +13,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -23,7 +23,7 @@ jobs:
 
   build-and-push:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -32,35 +32,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to Container Registry
+      - name: Set environment variables
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          REPO_OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "REPO_OWNER_LC=${REPO_OWNER_LC}" >> $GITHUB_ENV
+          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_ENV
+
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
+
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Build and push multi-architecture image
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.operator
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.SHORT_SHA }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
