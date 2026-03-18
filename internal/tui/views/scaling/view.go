@@ -64,13 +64,32 @@ type InstallProgressMsg struct {
 	Err       error
 }
 
+type poolViewMode int
+
+const (
+	poolModeList   poolViewMode = iota // Pool list (j/k navigate, Enter → detail)
+	poolModeDetail                     // Pool detail (Esc → back to list)
+	poolModeEdit                       // Editing a pool field
+)
+
+type focusPanel int
+
+const (
+	focusHealth focusPanel = iota // Left panel (components)
+	focusPools                    // Right panel (pools)
+)
+
 // Model is the Cluster tab view, combining health dashboard and autoscaling info.
 type Model struct {
 	cfg          *config.Config
 	scaling      *k8s.ScalingInfo
 	health       *ClusterHealthData
-	selected     int
-	selectedPool int
+	focus        focusPanel
+	selected     int // cursor in health panel
+	selectedPool int // cursor in pool list
+	poolMode     poolViewMode
+	editField    int    // which field is being edited (0=minNodes, 1=maxNodes, 2=scaling)
+	editBuffer   string // text input buffer for editing
 	wizard       *WizardModel
 	err          error
 }
@@ -102,6 +121,16 @@ func (m *Model) SetHealthData(data *ClusterHealthData) {
 // SetError records an error for display.
 func (m *Model) SetError(err error) {
 	m.err = err
+}
+
+// InPoolDetail returns true when viewing a pool's detail page.
+func (m Model) InPoolDetail() bool {
+	return m.poolMode == poolModeDetail || m.poolMode == poolModeEdit
+}
+
+// InPoolEdit returns true when editing a pool's fields.
+func (m Model) InPoolEdit() bool {
+	return m.poolMode == poolModeEdit
 }
 
 // WizardVisible returns whether the wizard overlay is active.
@@ -172,6 +201,34 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Pool edit mode handles its own keys.
+	if m.poolMode == poolModeEdit {
+		return m.updatePoolEdit(keyMsg)
+	}
+
+	// Pool detail mode.
+	if m.poolMode == poolModeDetail {
+		return m.updatePoolDetail(keyMsg)
+	}
+
+	// Tab switches focus between panels.
+	if key.Matches(keyMsg, key.NewBinding(key.WithKeys("tab"))) {
+		if m.focus == focusHealth {
+			m.focus = focusPools
+		} else {
+			m.focus = focusHealth
+		}
+		return m, nil
+	}
+
+	// Route to focused panel.
+	if m.focus == focusPools {
+		return m.updatePoolList(keyMsg)
+	}
+	return m.updateHealthPanel(keyMsg)
+}
+
+func (m Model) updateHealthPanel(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 	components := m.componentList()
 
 	switch {
@@ -192,7 +249,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("u"))):
-		// Update/reinstall selected component (works for running, outdated, degraded).
 		if m.selected < len(components) {
 			comp := components[m.selected]
 			if comp.Status == "running" || comp.Status == "outdated" || comp.Status == "degraded" {
@@ -204,37 +260,164 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 		}
-	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n"))):
-		// Create NodePool — only when operator is installed but no pools exist.
-		if m.scaling != nil && m.scaling.Installed && len(m.scaling.Pools) == 0 {
-			m.wizard = NewNodePoolWizard()
-			return m, nil
-		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
-		// If operator installed, trigger import detection.
 		if m.scaling != nil && m.scaling.Installed {
 			m.wizard = NewImportWizard()
 			return m, func() tea.Msg { return ImportNodesMsg{} }
 		}
-		// Otherwise: setup all — install all missing components.
 		for _, comp := range components {
 			if comp.Status == "not_installed" && comp.Installable {
 				m.wizard = NewWizard(comp.Name)
 				return m, nil
 			}
 		}
-	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("h", "left"))):
-		// Navigate pool selection left (up).
-		if m.scaling != nil && len(m.scaling.Pools) > 1 && m.selectedPool > 0 {
-			m.selectedPool--
-		}
-	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("l", "right"))):
-		// Navigate pool selection right (down).
-		if m.scaling != nil && m.selectedPool < len(m.scaling.Pools)-1 {
+	}
+	return m, nil
+}
+
+func (m Model) updatePoolList(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.scaling == nil {
+		return m, nil
+	}
+	pools := m.scaling.Pools
+
+	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("j", "down"))):
+		if m.selectedPool < len(pools)-1 {
 			m.selectedPool++
 		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("k", "up"))):
+		if m.selectedPool > 0 {
+			m.selectedPool--
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("enter"))):
+		if m.selectedPool < len(pools) {
+			m.poolMode = poolModeDetail
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n"))):
+		if m.scaling.Installed {
+			m.wizard = NewNodePoolWizard()
+			return m, nil
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
+		if m.scaling.Installed {
+			m.wizard = NewImportWizard()
+			return m, func() tea.Msg { return ImportNodesMsg{} }
+		}
 	}
+	return m, nil
+}
 
+// UpdateNodePoolMsg is emitted when the user edits a pool field.
+type UpdateNodePoolMsg struct {
+	PoolName string
+	Field    string // "minNodes", "maxNodes", "enabled"
+	Value    string
+}
+
+func (m Model) updatePoolDetailKeys(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc"))):
+		m.poolMode = poolModeList
+		return m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("e"))):
+		// Enter edit mode.
+		m.poolMode = poolModeEdit
+		m.editField = 0
+		if m.selectedPool < len(m.scaling.Pools) {
+			m.editBuffer = fmt.Sprintf("%d", m.scaling.Pools[m.selectedPool].MinNodes)
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updatePoolDetail(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	return m.updatePoolDetailKeys(keyMsg)
+}
+
+func (m Model) updatePoolEdit(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.scaling == nil || m.selectedPool >= len(m.scaling.Pools) {
+		m.poolMode = poolModeList
+		return m, nil
+	}
+	pool := m.scaling.Pools[m.selectedPool]
+
+	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("esc"))):
+		m.poolMode = poolModeDetail
+		return m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("tab", "down", "j"))):
+		if m.editField < 2 {
+			m.editField++
+			// Load current value for the new field.
+			switch m.editField {
+			case 0:
+				m.editBuffer = fmt.Sprintf("%d", pool.MinNodes)
+			case 1:
+				m.editBuffer = fmt.Sprintf("%d", pool.MaxNodes)
+			case 2:
+				if pool.ScalingEnabled {
+					m.editBuffer = "on"
+				} else {
+					m.editBuffer = "off"
+				}
+			}
+		}
+		return m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("shift+tab", "up", "K"))):
+		if m.editField > 0 {
+			m.editField--
+			switch m.editField {
+			case 0:
+				m.editBuffer = fmt.Sprintf("%d", pool.MinNodes)
+			case 1:
+				m.editBuffer = fmt.Sprintf("%d", pool.MaxNodes)
+			}
+		}
+		return m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys(" "))):
+		if m.editField == 2 {
+			if m.editBuffer == "on" {
+				m.editBuffer = "off"
+			} else {
+				m.editBuffer = "on"
+			}
+			return m, nil
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("enter"))):
+		// Apply the edit.
+		field := ""
+		switch m.editField {
+		case 0:
+			field = "minNodes"
+		case 1:
+			field = "maxNodes"
+		case 2:
+			field = "enabled"
+		}
+		m.poolMode = poolModeDetail
+		return m, func() tea.Msg {
+			return UpdateNodePoolMsg{
+				PoolName: pool.Name,
+				Field:    field,
+				Value:    m.editBuffer,
+			}
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("backspace"))):
+		if m.editField < 2 && len(m.editBuffer) > 0 {
+			m.editBuffer = m.editBuffer[:len(m.editBuffer)-1]
+		}
+		return m, nil
+	default:
+		if m.editField < 2 && len(keyMsg.Runes) > 0 {
+			for _, r := range keyMsg.Runes {
+				if r >= '0' && r <= '9' {
+					m.editBuffer += string(r)
+				}
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -491,6 +674,16 @@ func (m Model) viewNoPool(panelW, height int) string {
 }
 
 func (m Model) viewMultiPoolDashboard(panelW, height int) string {
+	// In detail or edit mode, show full-panel detail.
+	if m.poolMode == poolModeDetail || m.poolMode == poolModeEdit {
+		if m.selectedPool < len(m.scaling.Pools) {
+			return m.viewPoolDetailFull(m.scaling.Pools[m.selectedPool], panelW, height)
+		}
+	}
+	return m.viewPoolList(panelW, height)
+}
+
+func (m Model) viewPoolList(panelW, height int) string {
 	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
 	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
 
@@ -588,6 +781,163 @@ func (m Model) viewMultiPoolDashboard(panelW, height int) string {
 	if m.selectedPool < len(pools) {
 		poolDetail := m.viewPoolDetail(pools[m.selectedPool], panelW)
 		lines = append(lines, poolDetail...)
+	}
+
+	content := strings.Join(lines, "\n")
+	return styles.PanelStyle.Width(panelW).Render(content)
+}
+
+func (m Model) viewPoolDetailFull(pool k8s.NodePoolInfo, panelW, height int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
+
+	// Phase badge.
+	var phaseBadge string
+	switch pool.Phase {
+	case "Active", "":
+		phaseBadge = styles.Badge("ACTIVE", styles.ColorHealthy)
+	case "Scaling":
+		phaseBadge = styles.Badge("SCALING", styles.ColorWarning)
+	case "Degraded":
+		phaseBadge = styles.Badge("DEGRADED", styles.ColorCritical)
+	default:
+		phaseBadge = styles.Badge(pool.Phase, styles.ColorTextDim)
+	}
+
+	barW := panelW - 22
+	if barW < 10 {
+		barW = 10
+	}
+
+	// Scaling decision indicator.
+	var scalingDecision string
+	if !pool.ScalingEnabled {
+		scalingDecision = dim.Render("Scaling disabled")
+	} else if pool.PendingPods > 0 {
+		scalingDecision = styles.WarningStyle.Render(fmt.Sprintf("→ Would scale UP (%d pending pods)", pool.PendingPods))
+	} else if pool.AvgCPUPercent > float64(pool.ScaleUp.CPUPercent) || pool.AvgMemoryPercent > float64(pool.ScaleUp.MemoryPercent) {
+		scalingDecision = styles.WarningStyle.Render("→ Approaching scale-up threshold")
+	} else if pool.AvgCPUPercent < float64(pool.ScaleDown.CPUPercent) && pool.AvgMemoryPercent < float64(pool.ScaleDown.MemoryPercent) && pool.CurrentNodes > pool.MinNodes {
+		scalingDecision = styles.InfoStyle.Render("→ Candidate for scale-down")
+	} else {
+		scalingDecision = styles.HealthyStyle.Render("→ Stable, no action needed")
+	}
+
+	var lines []string
+	lines = append(lines, bright.Bold(true).Render(pool.Name)+"  "+phaseBadge)
+	lines = append(lines, "")
+
+	// Info section.
+	lines = append(lines, row("Provider", bright.Render(pool.Provider+" / "+pool.ServerType)))
+	lines = append(lines, row("Location", bright.Render(pool.Location)))
+	if pool.Role == "control-plane" {
+		lines = append(lines, row("Role", styles.InfoStyle.Render("control-plane")))
+	} else {
+		lines = append(lines, row("Role", dim.Render("worker")))
+	}
+	lines = append(lines, row("Nodes", bright.Render(fmt.Sprintf("%d / %d ready", pool.ReadyNodes, pool.CurrentNodes))))
+	lines = append(lines, row("Range", bright.Render(fmt.Sprintf("%d – %d", pool.MinNodes, pool.MaxNodes))))
+
+	// Scaling status.
+	lines = append(lines, "")
+	if pool.ScalingEnabled {
+		lines = append(lines, row("Scaling", styles.HealthyStyle.Render("enabled")))
+	} else {
+		lines = append(lines, row("Scaling", dim.Render("disabled")))
+	}
+
+	// CPU/MEM cluster metrics for this pool.
+	lines = append(lines, "")
+	lines = append(lines, styles.SubtitleStyle.Render("Pool Utilization"))
+	lines = append(lines, "")
+	cpuBar := styles.ProgressBar(pool.AvgCPUPercent, barW)
+	memBar := styles.ProgressBar(pool.AvgMemoryPercent, barW)
+	lines = append(lines, row("CPU", cpuBar))
+	lines = append(lines, row("Memory", memBar))
+	if pool.PendingPods > 0 {
+		lines = append(lines, row("Pending", styles.WarningStyle.Render(fmt.Sprintf("%d pods", pool.PendingPods))))
+	}
+
+	// Scaling decision.
+	lines = append(lines, "")
+	lines = append(lines, scalingDecision)
+
+	// Last scale.
+	if pool.LastScaleTime != nil {
+		ago := time.Since(*pool.LastScaleTime)
+		lines = append(lines, row("Last Scale", bright.Render(formatDuration(ago)+" ago")))
+	}
+
+	// Edit mode indicator.
+	if m.poolMode == poolModeEdit {
+		lines = append(lines, "")
+		lines = append(lines, styles.SubtitleStyle.Render("Edit Pool"))
+		lines = append(lines, "")
+		cursor := lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true).Render("_")
+		fields := []struct{ label, value string }{
+			{"Min Nodes", fmt.Sprintf("%d", pool.MinNodes)},
+			{"Max Nodes", fmt.Sprintf("%d", pool.MaxNodes)},
+		}
+		for i, f := range fields {
+			label := dim.Render(f.label + ":")
+			val := f.value
+			if i == m.editField {
+				label = lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true).Render(f.label + ":")
+				val = bright.Render(m.editBuffer) + cursor
+			} else {
+				val = bright.Render(val)
+			}
+			lines = append(lines, "  "+lipgloss.NewStyle().Width(12).Render(label)+" "+val)
+		}
+		// Scaling toggle.
+		scalingLabel := dim.Render("Scaling:")
+		var scalingVal string
+		if m.editField == 2 {
+			scalingLabel = lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true).Render("Scaling:")
+			if m.editBuffer == "on" {
+				scalingVal = styles.HealthyStyle.Render("[x] on")
+			} else {
+				scalingVal = dim.Render("[ ] off")
+			}
+		} else {
+			if pool.ScalingEnabled {
+				scalingVal = styles.HealthyStyle.Render("[x] on")
+			} else {
+				scalingVal = dim.Render("[ ] off")
+			}
+		}
+		lines = append(lines, "  "+lipgloss.NewStyle().Width(12).Render(scalingLabel)+" "+scalingVal)
+		lines = append(lines, "")
+		lines = append(lines, dim.Render("tab navigate  space toggle  enter apply  esc cancel"))
+	} else {
+		// Managed nodes.
+		poolClaims := m.claimsForPool(pool.Name)
+		if len(poolClaims) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, styles.SubtitleStyle.Render("Managed Nodes")+"  "+dim.Render(fmt.Sprintf("%d", len(poolClaims))))
+			lines = append(lines, "")
+			for _, claim := range poolClaims {
+				var phaseStr string
+				switch claim.Phase {
+				case "Ready":
+					phaseStr = styles.HealthyStyle.Render("●")
+				case "Failed":
+					phaseStr = styles.CriticalStyle.Render("●")
+				default:
+					phaseStr = dim.Render("●")
+				}
+				nodeName := claim.NodeName
+				if nodeName == "" {
+					nodeName = claim.Name
+				}
+				if len(nodeName) > 30 {
+					nodeName = nodeName[:28] + ".."
+				}
+				lines = append(lines, fmt.Sprintf("  %s %s", phaseStr, bright.Render(nodeName)))
+			}
+		}
+		lines = append(lines, "")
+		lines = append(lines, dim.Render("e edit  esc back"))
 	}
 
 	content := strings.Join(lines, "\n")

@@ -48,6 +48,11 @@ type NodePoolInfo struct {
 	CooldownSeconds int32
 	ScaleUp         ScaleThresholds
 	ScaleDown       ScaleThresholds
+
+	// Cluster metrics for this pool (from operator status).
+	AvgCPUPercent    float64
+	AvgMemoryPercent float64
+	PendingPods      int32
 }
 
 type ScaleThresholds struct {
@@ -125,6 +130,16 @@ func (c *Client) GetScalingInfo(ctx context.Context) (*ScalingInfo, error) {
 			pool.DesiredNodes = jsonInt32(status, "desiredNodes")
 			pool.ReadyNodes = jsonInt32(status, "readyNodes")
 			pool.Phase, _ = status["phase"].(string)
+			// Cluster metrics from operator status.
+			if metrics, ok := status["clusterMetrics"].(map[string]interface{}); ok {
+				if cpu, ok := metrics["avgCPUPercent"].(float64); ok {
+					pool.AvgCPUPercent = cpu
+				}
+				if mem, ok := metrics["avgMemoryPercent"].(float64); ok {
+					pool.AvgMemoryPercent = mem
+				}
+				pool.PendingPods = jsonInt32(metrics, "pendingPods")
+			}
 			if lst, ok := status["lastScaleTime"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, lst); err == nil {
 					pool.LastScaleTime = &t

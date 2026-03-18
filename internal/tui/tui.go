@@ -286,6 +286,64 @@ func (m model) installComponent(component string, opts map[string]string) tea.Cm
 	}
 }
 
+func (m model) updateNodePool(msg scaling.UpdateNodePoolMsg) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		dynClient, err := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+		if err != nil {
+			return installResultMsg{component: "nodepool-update", err: err}
+		}
+
+		gvr := schema.GroupVersionResource{Group: "konductor.io", Version: "v1alpha1", Resource: "nodepools"}
+
+		// Fetch current pool.
+		pool, err := dynClient.Resource(gvr).Get(ctx, msg.PoolName, metav1.GetOptions{})
+		if err != nil {
+			return installResultMsg{component: "nodepool-update", err: fmt.Errorf("fetching pool: %w", err)}
+		}
+
+		spec, _ := pool.Object["spec"].(map[string]interface{})
+		if spec == nil {
+			return installResultMsg{component: "nodepool-update", err: fmt.Errorf("pool has no spec")}
+		}
+
+		switch msg.Field {
+		case "minNodes":
+			val := parseInt64(msg.Value)
+			spec["minNodes"] = val
+		case "maxNodes":
+			val := parseInt64(msg.Value)
+			spec["maxNodes"] = val
+		case "enabled":
+			scaling, _ := spec["scaling"].(map[string]interface{})
+			if scaling == nil {
+				scaling = map[string]interface{}{}
+				spec["scaling"] = scaling
+			}
+			scaling["enabled"] = msg.Value == "on"
+		}
+
+		_, err = dynClient.Resource(gvr).Update(ctx, pool, metav1.UpdateOptions{})
+		if err != nil {
+			return installResultMsg{component: "nodepool-update", err: fmt.Errorf("updating pool: %w", err)}
+		}
+
+		return installResultMsg{component: "nodepool-update", err: nil}
+	}
+}
+
+func parseInt64(s string) int64 {
+	var result int64
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			result = result*10 + int64(c-'0')
+		}
+	}
+	return result
+}
+
 func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -499,6 +557,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.fetchClusterHealth(), m.fetchScalingData())
 		}
 		return m, nil
+
+	case scaling.UpdateNodePoolMsg:
+		return m, m.updateNodePool(msg)
 
 	case scaling.CreateNodePoolMsg:
 		return m, m.createNodePool(msg)
@@ -739,8 +800,14 @@ func (m model) renderFooter() string {
 	case tabScaling:
 		if m.scalingView.WizardVisible() {
 			helpItems = append([]struct{ key, desc string }{{"esc", "cancel"}, {"enter", "confirm"}}, helpItems...)
+		} else if m.scalingView.InPoolDetail() {
+			if m.scalingView.InPoolEdit() {
+				helpItems = append([]struct{ key, desc string }{{"tab", "field"}, {"space", "toggle"}, {"enter", "apply"}, {"esc", "cancel"}}, helpItems...)
+			} else {
+				helpItems = append([]struct{ key, desc string }{{"e", "edit"}, {"esc", "back"}}, helpItems...)
+			}
 		} else {
-			helpItems = append([]struct{ key, desc string }{{"j/k", "select"}, {"h/l", "pool"}, {"enter", "install"}, {"i", "import"}, {"n", "new pool"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"tab", "panel"}, {"j/k", "select"}, {"enter", "detail"}, {"i", "import"}, {"n", "new"}}, helpItems...)
 		}
 	}
 
