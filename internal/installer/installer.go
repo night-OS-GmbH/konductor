@@ -32,7 +32,7 @@ const (
 	DefaultNamespace = "konductor-system"
 
 	// DefaultImage is the default operator container image.
-	DefaultImage = "ghcr.io/night-os-gmbh/konductor-operator:latest"
+	DefaultImage = "ghcr.io/night-os-gmbh/konductor-operator:main"
 
 	// DefaultSecretName is the default name for the operator secrets.
 	DefaultSecretName = "konductor-secrets"
