@@ -10,9 +10,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/konductor-operato
 # Final stage
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
-RUN adduser -D -g '' appuser
+RUN adduser -D -u 65532 -g '' appuser
 WORKDIR /app
 COPY --from=builder /app/konductor-operator .
-USER appuser
+USER 65532
 EXPOSE 8080 8081
 ENTRYPOINT ["./konductor-operator"]
