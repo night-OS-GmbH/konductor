@@ -18,6 +18,11 @@ type NodePool struct {
 }
 
 type NodePoolSpec struct {
+	// Role defines the node role for this pool. Valid values are "worker"
+	// (default) and "control-plane". Control-plane pools have additional
+	// safety constraints (etcd quorum, maxUnavailable=1).
+	Role string `json:"role,omitempty"`
+
 	// Provider identifies the infrastructure provider (e.g. "hetzner").
 	Provider string `json:"provider"`
 
@@ -66,14 +71,15 @@ type ProviderConfig struct {
 
 // ScalingBehavior defines thresholds, stabilization windows, and cooldown.
 type ScalingBehavior struct {
-	ScaleUp         ScaleUpConfig   `json:"scaleUp"`
-	ScaleDown       ScaleDownConfig `json:"scaleDown"`
-	CooldownSeconds int32           `json:"cooldownSeconds"`
+	// Enabled activates autoscaling for this pool. When false (default),
+	// the pool is static — the operator collects metrics and evaluates
+	// decisions but will not create or delete nodes. Safe default for
+	// imported pools and control-plane pools.
+	Enabled bool `json:"enabled"`
 
-	// Paused stops all scaling actions when true. The operator still collects
-	// metrics and evaluates decisions, but will not create or delete nodes.
-	// Useful for testing, maintenance, or observing behavior before going live.
-	Paused bool `json:"paused,omitempty"`
+	ScaleUp         ScaleUpConfig   `json:"scaleUp,omitempty"`
+	ScaleDown       ScaleDownConfig `json:"scaleDown,omitempty"`
+	CooldownSeconds int32           `json:"cooldownSeconds,omitempty"`
 }
 
 // ScaleUpConfig controls when and how aggressively the pool scales up.

@@ -32,7 +32,7 @@ func NewMetricsCollector(c client.Client) *MetricsCollector {
 func (c *MetricsCollector) Collect(ctx context.Context, poolLabels map[string]string) (*decision.ClusterMetrics, error) {
 	log := log.FromContext(ctx)
 
-	// List nodes matching the pool's label selector.
+	// List all nodes, then filter to workers only.
 	var nodeList corev1.NodeList
 	listOpts := []client.ListOption{}
 	if len(poolLabels) > 0 {
@@ -42,10 +42,15 @@ func (c *MetricsCollector) Collect(ctx context.Context, poolLabels map[string]st
 		return nil, fmt.Errorf("listing nodes: %w", err)
 	}
 
-	// Build a lookup map of node names for pool membership checks.
+	// Build a lookup map. When pool labels are specified, include all matching
+	// nodes (the label already scopes to the correct pool, which may be a
+	// control-plane pool). Without pool labels, fall back to worker-only filtering.
 	poolNodes := make(map[string]*corev1.Node, len(nodeList.Items))
 	for i := range nodeList.Items {
-		poolNodes[nodeList.Items[i].Name] = &nodeList.Items[i]
+		node := &nodeList.Items[i]
+		if len(poolLabels) > 0 || isWorkerNode(node) {
+			poolNodes[node.Name] = node
+		}
 	}
 
 	// Fetch node metrics from the metrics API.

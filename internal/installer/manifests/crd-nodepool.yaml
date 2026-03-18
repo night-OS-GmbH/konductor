@@ -67,6 +67,15 @@ spec:
                 - scaling
                 - talos
               properties:
+                role:
+                  type: string
+                  description: >-
+                    Node role for this pool. "worker" (default) for workload nodes,
+                    "control-plane" for etcd/API server nodes with additional safety constraints.
+                  enum:
+                    - worker
+                    - control-plane
+                  default: worker
                 provider:
                   type: string
                   description: Infrastructure provider (e.g. "hetzner").
@@ -111,11 +120,13 @@ spec:
                   description: Maximum number of nodes the pool is allowed to scale to.
                 scaling:
                   type: object
-                  required:
-                    - scaleUp
-                    - scaleDown
-                    - cooldownSeconds
                   properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                      description: >-
+                        When true, autoscaling is active. When false (default),
+                        the pool is static — metrics are collected but no scaling actions execute.
                     scaleUp:
                       type: object
                       properties:
@@ -176,10 +187,6 @@ spec:
                       format: int32
                       minimum: 0
                       description: Global cooldown between scaling actions.
-                    paused:
-                      type: boolean
-                      default: false
-                      description: When true, the operator logs scaling decisions but does not execute them. Use for testing and observation.
                 talos:
                   type: object
                   required:

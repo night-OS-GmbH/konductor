@@ -1,11 +1,13 @@
 package scaling
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/night-OS-GmbH/konductor/internal/operator"
 	"github.com/night-OS-GmbH/konductor/internal/tui/styles"
 )
 
@@ -19,10 +21,15 @@ const (
 	stepDone                         // Result display
 
 	// NodePool wizard steps.
-	stepNPServerType  // Select server type
-	stepNPLocation    // Select location
-	stepNPMinMax      // Set min/max nodes
-	stepNPConfirm     // Review and confirm
+	stepNPServerType // Select server type
+	stepNPLocation   // Select location
+	stepNPMinMax     // Set min/max nodes
+	stepNPConfirm    // Review and confirm
+
+	// Import wizard steps.
+	stepImportDetect  // "Detecting nodes..."
+	stepImportConfirm // "Found X nodes, import as Y pools?"
+	stepImportProgress // "Importing..."
 )
 
 // WizardModel manages the state of the component installation wizard overlay.
@@ -46,8 +53,11 @@ type WizardModel struct {
 	npLocation   string
 	npMinNodes   string
 	npMaxNodes   string
-	npPaused     bool
+	npEnabled    bool
 	npField      int // which field is being edited (0=serverType, 1=location, 2=min, 3=max)
+
+	// Import wizard state.
+	importPools []operator.SuggestedPool
 }
 
 // NewWizard creates a new wizard for installing the given component.
@@ -88,8 +98,8 @@ func (w WizardModel) Update(msg tea.Msg) (WizardModel, tea.Cmd) {
 		return w.updateTokenInput(keyMsg)
 	case stepConfigPath:
 		return w.updateConfigPath(keyMsg)
-	case stepInstalling:
-		// No user input during installation.
+	case stepInstalling, stepImportDetect, stepImportProgress:
+		// No user input during installation/detection/import.
 		return w, nil
 	case stepDone:
 		return w.updateDone(keyMsg)
@@ -97,6 +107,8 @@ func (w WizardModel) Update(msg tea.Msg) (WizardModel, tea.Cmd) {
 		return w.updateNodePool(keyMsg)
 	case stepNPConfirm:
 		return w.updateNPConfirm(keyMsg)
+	case stepImportConfirm:
+		return w.updateImportConfirm(keyMsg)
 	}
 
 	return w, nil
@@ -241,6 +253,12 @@ func (w WizardModel) View(width, height int) string {
 		content = w.viewNodePoolForm(panelW)
 	case stepNPConfirm:
 		content = w.viewNPConfirm(panelW)
+	case stepImportDetect:
+		content = w.viewImportDetect(panelW)
+	case stepImportConfirm:
+		content = w.viewImportConfirm(panelW)
+	case stepImportProgress:
+		content = w.viewImportProgress(panelW)
 	}
 
 	panel := lipgloss.NewStyle().
@@ -427,7 +445,7 @@ func (w WizardModel) viewDone(panelW int) string {
 	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
 
 	if w.progressErr != nil {
-		title := styles.CriticalStyle.Render("Installation Failed")
+		title := styles.CriticalStyle.Render("Operation Failed")
 		return strings.Join([]string{
 			title,
 			"",
@@ -437,13 +455,16 @@ func (w WizardModel) viewDone(panelW int) string {
 		}, "\n")
 	}
 
-	title := styles.HealthyStyle.Render("Installation Complete")
-	msg := dim.Render(w.component + " has been installed successfully.")
+	title := styles.HealthyStyle.Render("Operation Complete")
+	msg := w.progressMsg
+	if msg == "" {
+		msg = w.component + " has been installed successfully."
+	}
 
 	return strings.Join([]string{
 		title,
 		"",
-		styles.HealthyStyle.Render("●") + " " + msg,
+		styles.HealthyStyle.Render("●") + " " + dim.Render(msg),
 		"",
 		dim.Render("enter/esc close"),
 	}, "\n")
@@ -461,7 +482,7 @@ func NewNodePoolWizard() *WizardModel {
 		npLocation:   "nbg1",
 		npMinNodes:   "3",
 		npMaxNodes:   "10",
-		npPaused:     true, // Safe default: start paused.
+		npEnabled:    false, // Safe default: start with scaling off.
 	}
 }
 
@@ -482,8 +503,8 @@ func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 		return w, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 		if w.npField == 4 {
-			// Toggle paused.
-			w.npPaused = !w.npPaused
+			// Toggle enabled.
+			w.npEnabled = !w.npEnabled
 			return w, nil
 		}
 		// Move to confirm.
@@ -495,7 +516,7 @@ func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 		return w, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
 		if w.npField == 4 {
-			w.npPaused = !w.npPaused
+			w.npEnabled = !w.npEnabled
 			return w, nil
 		}
 	}
@@ -560,7 +581,7 @@ func (w WizardModel) updateNPConfirm(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 				Location:   w.npLocation,
 				MinNodes:   minN,
 				MaxNodes:   maxN,
-				Paused:     w.npPaused,
+				Enabled:    w.npEnabled,
 			}
 		}
 	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
@@ -591,7 +612,7 @@ func (w WizardModel) viewNodePoolForm(panelW int) string {
 	lines = append(lines, title)
 	lines = append(lines, "")
 	lines = append(lines, dim.Render("Configure your autoscaling node pool."))
-	lines = append(lines, dim.Render("Scaling starts in paused (observe-only) mode."))
+	lines = append(lines, dim.Render("Scaling starts disabled (observe-only) by default."))
 	lines = append(lines, "")
 
 	labelW := 14
@@ -607,18 +628,18 @@ func (w WizardModel) viewNodePoolForm(panelW int) string {
 		lines = append(lines, "  "+label+" "+val)
 	}
 
-	// Paused toggle.
-	pausedLabel := lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorTextDim).Render("Paused:")
-	var pausedVal string
-	if w.npPaused {
-		pausedVal = styles.HealthyStyle.Render("[x]") + " " + dim.Render("observe-only, no scaling actions")
+	// Scaling enabled toggle.
+	enabledLabel := lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorTextDim).Render("Scaling:")
+	var enabledVal string
+	if w.npEnabled {
+		enabledVal = styles.WarningStyle.Render("[x]") + " " + styles.WarningStyle.Render("live -- scaling actions will execute")
 	} else {
-		pausedVal = dim.Render("[ ]") + " " + styles.WarningStyle.Render("live — scaling actions will execute")
+		enabledVal = styles.HealthyStyle.Render("[x]") + " " + dim.Render("disabled -- observe-only, no scaling actions")
 	}
 	if w.npField == 4 {
-		pausedLabel = lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorPrimary).Bold(true).Render("Paused:")
+		enabledLabel = lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorPrimary).Bold(true).Render("Scaling:")
 	}
-	lines = append(lines, "  "+pausedLabel+" "+pausedVal)
+	lines = append(lines, "  "+enabledLabel+" "+enabledVal)
 
 	lines = append(lines, "")
 	lines = append(lines, dim.Render("tab/j/k navigate  enter confirm  space toggle  esc cancel"))
@@ -633,10 +654,10 @@ func (w WizardModel) viewNPConfirm(panelW int) string {
 	title := bright.Bold(true).Render("Create NodePool?")
 
 	var modeStr string
-	if w.npPaused {
-		modeStr = styles.HealthyStyle.Render("Paused (observe-only)")
-	} else {
+	if w.npEnabled {
 		modeStr = styles.WarningStyle.Render("Live (scaling active)")
+	} else {
+		modeStr = styles.HealthyStyle.Render("Disabled (observe-only)")
 	}
 
 	lines := []string{
@@ -652,6 +673,132 @@ func (w WizardModel) viewNPConfirm(panelW int) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// --- Import Wizard ---
+
+// NewImportWizard creates a wizard for importing existing nodes.
+func NewImportWizard() *WizardModel {
+	return &WizardModel{
+		visible:     true,
+		component:   "import",
+		step:        stepImportDetect,
+		progressMsg: "Detecting existing nodes...",
+	}
+}
+
+func (w WizardModel) updateImportConfirm(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
+	switch {
+	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+		w.visible = false
+		return w, nil
+	case key.Matches(msg, key.NewBinding(key.WithKeys("y", "enter"))):
+		w.step = stepImportProgress
+		w.progressMsg = "Importing nodes..."
+		pools := w.importPools
+		return w, func() tea.Msg {
+			return ImportConfirmMsg{Pools: pools}
+		}
+	case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
+		w.visible = false
+		return w, nil
+	}
+	return w, nil
+}
+
+func (w WizardModel) viewImportDetect(panelW int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(styles.ColorText).
+		Render("Import Existing Nodes")
+
+	spinner := styles.InfoStyle.Render("◌ ") + dim.Render(w.progressMsg)
+
+	return strings.Join([]string{
+		title,
+		"",
+		spinner,
+		"",
+		dim.Render("Please wait..."),
+	}, "\n")
+}
+
+func (w WizardModel) viewImportConfirm(panelW int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
+
+	title := bright.Bold(true).Render("Import Existing Nodes")
+
+	if len(w.importPools) == 0 {
+		return strings.Join([]string{
+			title,
+			"",
+			dim.Render("No nodes found to import."),
+			"",
+			dim.Render("enter/esc close"),
+		}, "\n")
+	}
+
+	var lines []string
+	lines = append(lines, title)
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("Found existing nodes to import as pools:"))
+	lines = append(lines, "")
+
+	for _, pool := range w.importPools {
+		nodeCount := len(pool.Nodes)
+		var readyCount int
+		for _, n := range pool.Nodes {
+			if n.Ready {
+				readyCount++
+			}
+		}
+
+		var roleIndicator string
+		if pool.Role == "control-plane" {
+			roleIndicator = styles.InfoStyle.Render("CP")
+		} else {
+			roleIndicator = dim.Render("WK")
+		}
+
+		poolLine := fmt.Sprintf("  %s  %-24s  %d nodes (%d ready)  %s",
+			roleIndicator,
+			bright.Render(pool.Name),
+			nodeCount,
+			readyCount,
+			dim.Render("scaling: off"),
+		)
+		lines = append(lines, poolLine)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("Pools will be created with scaling disabled (safe default)."))
+	lines = append(lines, dim.Render("You can enable scaling per pool after import."))
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("y/enter import  n/esc cancel"))
+
+	return strings.Join(lines, "\n")
+}
+
+func (w WizardModel) viewImportProgress(panelW int) string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(styles.ColorText).
+		Render("Importing Nodes")
+
+	spinner := styles.InfoStyle.Render("◌ ") + dim.Render(w.progressMsg)
+
+	return strings.Join([]string{
+		title,
+		"",
+		spinner,
+		"",
+		dim.Render("Creating NodePool CRs, labeling nodes, creating NodeClaims..."),
+	}, "\n")
 }
 
 func parseInt32(s string, fallback int32) int32 {

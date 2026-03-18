@@ -14,6 +14,7 @@ import (
 	"github.com/night-OS-GmbH/konductor/internal/config"
 	"github.com/night-OS-GmbH/konductor/internal/installer"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
+	"github.com/night-OS-GmbH/konductor/internal/operator"
 	"github.com/night-OS-GmbH/konductor/internal/tui/styles"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/ctxswitcher"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/dashboard"
@@ -311,7 +312,7 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 					"minNodes": int64(msg.MinNodes),
 					"maxNodes": int64(msg.MaxNodes),
 					"scaling": map[string]interface{}{
-						"paused": msg.Paused,
+						"enabled": msg.Enabled,
 						"scaleUp": map[string]interface{}{
 							"cpuThresholdPercent":        int64(80),
 							"memoryThresholdPercent":     int64(80),
@@ -346,6 +347,45 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 		}
 
 		return installResultMsg{component: "nodepool", err: nil}
+	}
+}
+
+// discoverNodes discovers existing K8s nodes and suggests pools for import.
+func (m model) discoverNodes() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		clientset := m.client.Clientset()
+		discovered, err := operator.DiscoverNodes(ctx, clientset)
+		if err != nil {
+			return importDetectMsg{err: err}
+		}
+
+		pools := operator.SuggestPools(discovered)
+		return importDetectMsg{pools: pools}
+	}
+}
+
+// importNodes creates NodePool CRs, labels nodes, and creates NodeClaim CRs for all pools.
+func (m model) importNodes(pools []operator.SuggestedPool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		dynClient, err := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+		if err != nil {
+			return importResultMsg{err: err}
+		}
+
+		clientset := m.client.Clientset()
+		for _, pool := range pools {
+			if err := operator.ImportNodes(ctx, dynClient, clientset, pool); err != nil {
+				return importResultMsg{err: err}
+			}
+		}
+
+		return importResultMsg{}
 	}
 }
 
@@ -462,6 +502,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case scaling.CreateNodePoolMsg:
 		return m, m.createNodePool(msg)
+
+	case scaling.ImportNodesMsg:
+		// Trigger node discovery.
+		return m, m.discoverNodes()
+
+	case importDetectMsg:
+		// Forward discovered pools to the import wizard.
+		m.scalingView.UpdateImportDetect(msg.pools, msg.err)
+		return m, nil
+
+	case scaling.ImportConfirmMsg:
+		// User confirmed import — run it.
+		return m, m.importNodes(msg.Pools)
+
+	case importResultMsg:
+		// Import complete — update wizard and refresh data.
+		m.scalingView.UpdateImportResult(msg.err)
+		if msg.err == nil && m.client != nil {
+			return m, tea.Batch(m.fetchScalingData(), m.fetchClusterHealth())
+		}
+		return m, nil
 
 	case pods.FetchLogsMsg:
 		return m, m.fetchLogs(msg.Namespace, msg.PodName, msg.Container, msg.TailLines)
@@ -601,7 +662,7 @@ func (m model) renderHeader(width int) string {
 	logo := lipgloss.NewStyle().
 		Foreground(styles.ColorPrimary).
 		Bold(true).
-		Render("⚡ KONDUCTOR")
+		Render("KONDUCTOR")
 
 	ver := lipgloss.NewStyle().
 		Foreground(styles.ColorBorder).
@@ -612,7 +673,7 @@ func (m model) renderHeader(width int) string {
 	if m.client != nil {
 		sep := lipgloss.NewStyle().
 			Foreground(styles.ColorTextDim).
-			Render("  │  ")
+			Render("  |  ")
 		ctxName := lipgloss.NewStyle().
 			Foreground(styles.ColorText).
 			Render(m.client.ActiveContext())
@@ -666,20 +727,20 @@ func (m model) renderFooter() string {
 
 	switch m.activeTab {
 	case tabNodes:
-		helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}}, helpItems...)
+		helpItems = append([]struct{ key, desc string }{{"j/k", "select"}}, helpItems...)
 	case tabNamespaces:
-		helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"enter", "-> pods"}}, helpItems...)
+		helpItems = append([]struct{ key, desc string }{{"j/k", "select"}, {"enter", "-> pods"}}, helpItems...)
 	case tabPods:
 		if m.podsView.InLogMode() {
-			helpItems = append([]struct{ key, desc string }{{"↑↓", "scroll"}, {"esc", "back"}, {"l", "live"}, {"f", "full"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"j/k", "scroll"}, {"esc", "back"}, {"l", "live"}, {"f", "full"}}, helpItems...)
 		} else {
-			helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"<->", "ns"}, {"s", "sort"}, {"enter", "logs"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"j/k", "select"}, {"<->", "ns"}, {"s", "sort"}, {"enter", "logs"}}, helpItems...)
 		}
 	case tabScaling:
 		if m.scalingView.WizardVisible() {
 			helpItems = append([]struct{ key, desc string }{{"esc", "cancel"}, {"enter", "confirm"}}, helpItems...)
 		} else {
-			helpItems = append([]struct{ key, desc string }{{"↑↓", "select"}, {"enter", "install"}, {"u", "update"}, {"i", "setup all"}}, helpItems...)
+			helpItems = append([]struct{ key, desc string }{{"j/k", "select"}, {"h/l", "pool"}, {"enter", "install"}, {"i", "import"}, {"n", "new pool"}}, helpItems...)
 		}
 	}
 
@@ -690,7 +751,7 @@ func (m model) renderFooter() string {
 		parts = append(parts, fmt.Sprintf("%s %s", k, d))
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, joinWithSep(parts, "  │  ")...)
+	return lipgloss.JoinHorizontal(lipgloss.Top, joinWithSep(parts, "  |  ")...)
 }
 
 func joinWithSep(items []string, sep string) []string {
@@ -699,7 +760,7 @@ func joinWithSep(items []string, sep string) []string {
 	}
 	result := []string{items[0]}
 	for _, item := range items[1:] {
-		result = append(result, styles.KeyDescStyle.Render("  │  "), item)
+		result = append(result, styles.KeyDescStyle.Render("  |  "), item)
 	}
 	return result
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/night-OS-GmbH/konductor/internal/cluster"
 	"github.com/night-OS-GmbH/konductor/internal/config"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
+	"github.com/night-OS-GmbH/konductor/internal/operator"
 	"github.com/night-OS-GmbH/konductor/internal/tui/styles"
 )
 
@@ -44,7 +45,15 @@ type CreateNodePoolMsg struct {
 	Location   string
 	MinNodes   int32
 	MaxNodes   int32
-	Paused     bool
+	Enabled    bool
+}
+
+// ImportNodesMsg is emitted when the user triggers node import detection.
+type ImportNodesMsg struct{}
+
+// ImportConfirmMsg is emitted when the user confirms import of suggested pools.
+type ImportConfirmMsg struct {
+	Pools []operator.SuggestedPool
 }
 
 // InstallProgressMsg reports progress/completion of a component installation.
@@ -57,12 +66,13 @@ type InstallProgressMsg struct {
 
 // Model is the Cluster tab view, combining health dashboard and autoscaling info.
 type Model struct {
-	cfg      *config.Config
-	scaling  *k8s.ScalingInfo
-	health   *ClusterHealthData
-	selected int
-	wizard   *WizardModel
-	err      error
+	cfg          *config.Config
+	scaling      *k8s.ScalingInfo
+	health       *ClusterHealthData
+	selected     int
+	selectedPool int
+	wizard       *WizardModel
+	err          error
 }
 
 // New creates a new scaling/cluster view Model.
@@ -74,6 +84,14 @@ func New(cfg *config.Config) Model {
 func (m *Model) SetScalingData(info *k8s.ScalingInfo) {
 	m.scaling = info
 	m.err = nil
+	// Clamp selectedPool to valid range.
+	if info != nil && m.selectedPool >= len(info.Pools) {
+		if len(info.Pools) > 0 {
+			m.selectedPool = len(info.Pools) - 1
+		} else {
+			m.selectedPool = 0
+		}
+	}
 }
 
 // SetHealthData updates the cluster health information.
@@ -109,6 +127,33 @@ func (m *Model) UpdateWizardProgress(msg InstallProgressMsg) {
 	m.wizard.done = msg.Done
 	if msg.Done {
 		m.wizard.step = stepDone
+	}
+}
+
+// UpdateImportDetect forwards discovered pools to the import wizard.
+func (m *Model) UpdateImportDetect(pools []operator.SuggestedPool, err error) {
+	if m.wizard == nil {
+		return
+	}
+	if err != nil {
+		m.wizard.progressErr = err
+		m.wizard.step = stepDone
+		return
+	}
+	m.wizard.importPools = pools
+	m.wizard.step = stepImportConfirm
+}
+
+// UpdateImportResult forwards import completion to the wizard.
+func (m *Model) UpdateImportResult(err error) {
+	if m.wizard == nil {
+		return
+	}
+	m.wizard.progressErr = err
+	m.wizard.done = true
+	m.wizard.step = stepDone
+	if err == nil {
+		m.wizard.progressMsg = "Nodes imported successfully."
 	}
 }
 
@@ -160,19 +205,33 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n"))):
-		// Create NodePool — only when operator is installed but no pool exists.
-		if m.scaling != nil && m.scaling.Installed && m.scaling.Pool == nil {
+		// Create NodePool — only when operator is installed but no pools exist.
+		if m.scaling != nil && m.scaling.Installed && len(m.scaling.Pools) == 0 {
 			m.wizard = NewNodePoolWizard()
 			return m, nil
 		}
 	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("i"))):
-		// Setup all: install all missing components.
-		// This opens the wizard for the first uninstalled component.
+		// If operator installed and no pools, trigger import detection.
+		if m.scaling != nil && m.scaling.Installed && len(m.scaling.Pools) == 0 {
+			m.wizard = NewImportWizard()
+			return m, func() tea.Msg { return ImportNodesMsg{} }
+		}
+		// Otherwise: setup all — install all missing components.
 		for _, comp := range components {
 			if comp.Status == "not_installed" && comp.Installable {
 				m.wizard = NewWizard(comp.Name)
 				return m, nil
 			}
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("h", "left"))):
+		// Navigate pool selection left (up).
+		if m.scaling != nil && len(m.scaling.Pools) > 1 && m.selectedPool > 0 {
+			m.selectedPool--
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("l", "right"))):
+		// Navigate pool selection right (down).
+		if m.scaling != nil && m.selectedPool < len(m.scaling.Pools)-1 {
+			m.selectedPool++
 		}
 	}
 
@@ -396,12 +455,12 @@ func (m Model) viewScalingPanel(panelW, height int) string {
 		return m.viewNotInstalled(panelW, height)
 	}
 
-	// No NodePool configured.
-	if m.scaling.Pool == nil {
+	// No pools configured.
+	if len(m.scaling.Pools) == 0 {
 		return m.viewNoPool(panelW, height)
 	}
 
-	return m.viewDashboard(panelW, height)
+	return m.viewMultiPoolDashboard(panelW, height)
 }
 
 func (m Model) viewNotInstalled(panelW, height int) string {
@@ -425,19 +484,119 @@ func (m Model) viewNoPool(panelW, height int) string {
 		"",
 		lipgloss.NewStyle().Foreground(styles.ColorTextDim).Render("No NodePool configured yet."),
 		"",
-		lipgloss.NewStyle().Foreground(styles.ColorText).Render("Press "+styles.KeyStyle.Render("n")+" to create a NodePool."),
+		lipgloss.NewStyle().Foreground(styles.ColorText).Render("Press "+styles.KeyStyle.Render("i")+" to import existing nodes."),
+		lipgloss.NewStyle().Foreground(styles.ColorText).Render("Press "+styles.KeyStyle.Render("n")+" to create a new NodePool."),
 	)
 	return styles.PanelStyle.Width(panelW).Render(content)
 }
 
-func (m Model) viewDashboard(panelW, height int) string {
-	pool := m.scaling.Pool
-	claims := m.scaling.Claims
+func (m Model) viewMultiPoolDashboard(panelW, height int) string {
 	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
 	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
 
-	// --- Pool Status ---
+	pools := m.scaling.Pools
+
+	// Count total nodes.
+	var totalNodes int32
+	for _, p := range pools {
+		totalNodes += p.CurrentNodes
+	}
+
 	title := styles.TitleStyle.Render("Autoscaling")
+	poolSummary := dim.Render(fmt.Sprintf("%d pools, %d nodes", len(pools), totalNodes))
+
+	var lines []string
+	lines = append(lines, title+"  "+poolSummary)
+	lines = append(lines, "")
+	lines = append(lines, styles.SubtitleStyle.Render("Pools"))
+	lines = append(lines, "")
+
+	// Pool list rows.
+	for i, pool := range pools {
+		selected := i == m.selectedPool
+
+		// Status icon.
+		var icon string
+		switch pool.Phase {
+		case "Active", "":
+			if pool.ReadyNodes == pool.CurrentNodes && pool.CurrentNodes > 0 {
+				icon = styles.HealthyStyle.Render("●")
+			} else if pool.CurrentNodes == 0 {
+				icon = dim.Render("○")
+			} else {
+				icon = styles.WarningStyle.Render("●")
+			}
+		case "Scaling":
+			icon = styles.WarningStyle.Render("◌")
+		case "Degraded":
+			icon = styles.CriticalStyle.Render("●")
+		default:
+			icon = dim.Render("●")
+		}
+
+		// Pool name.
+		nameStyle := dim
+		if selected {
+			nameStyle = bright.Bold(true)
+		}
+
+		// Ready count.
+		readyStr := fmt.Sprintf("%d/%d ready", pool.ReadyNodes, pool.CurrentNodes)
+
+		// Role badge.
+		var roleBadge string
+		if pool.Role == "control-plane" {
+			roleBadge = styles.InfoStyle.Render("CP")
+		} else {
+			roleBadge = dim.Render(pool.ServerType)
+		}
+
+		// Scaling status.
+		var scalingStr string
+		if pool.ScalingEnabled {
+			scalingStr = styles.HealthyStyle.Render("scaling: on")
+		} else {
+			scalingStr = dim.Render("scaling: off")
+		}
+
+		poolLine := fmt.Sprintf("  %s %-20s  %-12s  %-6s  %s",
+			icon,
+			nameStyle.Render(pool.Name),
+			dim.Render(readyStr),
+			roleBadge,
+			scalingStr,
+		)
+
+		if selected {
+			poolLine = lipgloss.NewStyle().
+				Background(styles.ColorBgActive).
+				Render(poolLine)
+		}
+
+		lines = append(lines, poolLine)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dim.Render("h/l select pool  n new pool"))
+
+	// Divider.
+	lines = append(lines, "")
+	lines = append(lines, dim.Render(strings.Repeat("─", panelW-6)))
+	lines = append(lines, "")
+
+	// Show details for the selected pool.
+	if m.selectedPool < len(pools) {
+		poolDetail := m.viewPoolDetail(pools[m.selectedPool], panelW)
+		lines = append(lines, poolDetail...)
+	}
+
+	content := strings.Join(lines, "\n")
+	return styles.PanelStyle.Width(panelW).Render(content)
+}
+
+func (m Model) viewPoolDetail(pool k8s.NodePoolInfo, panelW int) []string {
+	dim := lipgloss.NewStyle().Foreground(styles.ColorTextDim)
+	bright := lipgloss.NewStyle().Foreground(styles.ColorText)
 
 	// Phase badge.
 	var phaseBadge string
@@ -479,20 +638,20 @@ func (m Model) viewDashboard(panelW, height int) string {
 	}
 
 	var lines []string
-	lines = append(lines, title+"  "+phaseBadge)
+	lines = append(lines, bright.Bold(true).Render(pool.Name)+"  "+phaseBadge)
 	lines = append(lines, "")
-	lines = append(lines, row("Pool", bright.Render(pool.Name)))
 	lines = append(lines, row("Provider", bright.Render(pool.Provider+" / "+pool.ServerType)))
 	lines = append(lines, row("Location", bright.Render(pool.Location)))
-	lines = append(lines, "")
-	lines = append(lines, styles.SubtitleStyle.Render("Nodes"))
+	if pool.Role == "control-plane" {
+		lines = append(lines, row("Role", styles.InfoStyle.Render("control-plane")))
+	} else {
+		lines = append(lines, row("Role", dim.Render("worker")))
+	}
 	lines = append(lines, "")
 	lines = append(lines, row("Current", bright.Render(nodeStr)))
 	lines = append(lines, row("Range", bright.Render(fmt.Sprintf("%d - %d", pool.MinNodes, pool.MaxNodes))))
 	lines = append(lines, row("Capacity", nodeBar))
 	lines = append(lines, row("Last Scale", lastScale))
-	lines = append(lines, "")
-	lines = append(lines, styles.SubtitleStyle.Render("Thresholds"))
 	lines = append(lines, "")
 	lines = append(lines, row("Scale Up", dim.Render(fmt.Sprintf("CPU > %d%% or MEM > %d%% for %ds",
 		pool.ScaleUp.CPUPercent, pool.ScaleUp.MemoryPercent, pool.ScaleUp.StabilizationSeconds))))
@@ -500,15 +659,16 @@ func (m Model) viewDashboard(panelW, height int) string {
 		pool.ScaleDown.CPUPercent, pool.ScaleDown.MemoryPercent, pool.ScaleDown.StabilizationSeconds))))
 	lines = append(lines, row("Cooldown", dim.Render(fmt.Sprintf("%ds", pool.CooldownSeconds))))
 
-	// Claims section.
-	if len(claims) > 0 {
+	// Show claims for this pool.
+	poolClaims := m.claimsForPool(pool.Name)
+	if len(poolClaims) > 0 {
 		lines = append(lines, "")
 		claimTitle := styles.SubtitleStyle.Render("Managed Nodes")
-		claimCount := dim.Render(fmt.Sprintf("  %d claims", len(claims)))
+		claimCount := dim.Render(fmt.Sprintf("  %d claims", len(poolClaims)))
 		lines = append(lines, claimTitle+claimCount)
 		lines = append(lines, "")
 
-		for _, claim := range claims {
+		for _, claim := range poolClaims {
 			var phaseStr string
 			switch claim.Phase {
 			case "Ready":
@@ -535,8 +695,20 @@ func (m Model) viewDashboard(panelW, height int) string {
 		}
 	}
 
-	content := strings.Join(lines, "\n")
-	return styles.PanelStyle.Width(panelW).Render(content)
+	return lines
+}
+
+func (m Model) claimsForPool(poolName string) []k8s.NodeClaimInfo {
+	if m.scaling == nil {
+		return nil
+	}
+	var result []k8s.NodeClaimInfo
+	for _, c := range m.scaling.Claims {
+		if c.Pool == poolName {
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
 // HealthFromCluster converts cluster.ClusterHealth to the TUI display type.

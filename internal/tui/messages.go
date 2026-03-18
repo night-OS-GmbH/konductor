@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
+	"github.com/night-OS-GmbH/konductor/internal/operator"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/scaling"
 )
 
@@ -49,4 +50,15 @@ type clusterHealthMsg struct {
 type installResultMsg struct {
 	component string
 	err       error
+}
+
+// importDetectMsg carries discovered node pools for the import wizard.
+type importDetectMsg struct {
+	pools []operator.SuggestedPool
+	err   error
+}
+
+// importResultMsg carries the result of the node import operation.
+type importResultMsg struct {
+	err error
 }

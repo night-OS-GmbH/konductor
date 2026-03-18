@@ -27,12 +27,13 @@ var (
 // ScalingInfo holds the scaling state for TUI display.
 type ScalingInfo struct {
 	Installed bool
-	Pool      *NodePoolInfo
+	Pools     []NodePoolInfo
 	Claims    []NodeClaimInfo
 }
 
 type NodePoolInfo struct {
 	Name            string
+	Role            string // "worker" or "control-plane"
 	Provider        string
 	ServerType      string
 	Location        string
@@ -42,6 +43,7 @@ type NodePoolInfo struct {
 	DesiredNodes    int32
 	ReadyNodes      int32
 	Phase           string
+	ScalingEnabled  bool
 	LastScaleTime   *time.Time
 	CooldownSeconds int32
 	ScaleUp         ScaleThresholds
@@ -82,14 +84,17 @@ func (c *Client) GetScalingInfo(ctx context.Context) (*ScalingInfo, error) {
 
 	info := &ScalingInfo{Installed: true}
 
-	// Parse the first NodePool (typically there's only one).
-	if len(poolList.Items) > 0 {
-		raw := poolList.Items[0]
-		pool := &NodePoolInfo{}
+	// Parse all NodePools.
+	for _, raw := range poolList.Items {
+		pool := NodePoolInfo{}
 		pool.Name = raw.GetName()
 
 		// Extract spec fields.
 		if spec, ok := raw.Object["spec"].(map[string]interface{}); ok {
+			pool.Role, _ = spec["role"].(string)
+			if pool.Role == "" {
+				pool.Role = "worker"
+			}
 			pool.Provider, _ = spec["provider"].(string)
 			if pc, ok := spec["providerConfig"].(map[string]interface{}); ok {
 				pool.ServerType, _ = pc["serverType"].(string)
@@ -99,6 +104,7 @@ func (c *Client) GetScalingInfo(ctx context.Context) (*ScalingInfo, error) {
 			pool.MaxNodes = jsonInt32(spec, "maxNodes")
 
 			if scaling, ok := spec["scaling"].(map[string]interface{}); ok {
+				pool.ScalingEnabled = jsonBool(scaling, "enabled")
 				pool.CooldownSeconds = jsonInt32(scaling, "cooldownSeconds")
 				if su, ok := scaling["scaleUp"].(map[string]interface{}); ok {
 					pool.ScaleUp.CPUPercent = jsonInt32(su, "cpuThresholdPercent")
@@ -126,7 +132,7 @@ func (c *Client) GetScalingInfo(ctx context.Context) (*ScalingInfo, error) {
 			}
 		}
 
-		info.Pool = pool
+		info.Pools = append(info.Pools, pool)
 	}
 
 	// List NodeClaims.
@@ -196,4 +202,13 @@ func jsonInt32(m map[string]interface{}, key string) int32 {
 		return int32(i)
 	}
 	return 0
+}
+
+func jsonBool(m map[string]interface{}, key string) bool {
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
 }

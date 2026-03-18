@@ -107,7 +107,8 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// 3. Collect cluster metrics for nodes matching this pool.
+	// 3. Collect cluster metrics for nodes belonging to this pool.
+	// Uses the pool label to filter so each pool only sees its own nodes.
 	poolLabels := map[string]string{labelNodePool: pool.Name}
 	clusterMetrics, err := r.metricsCollector.Collect(ctx, poolLabels)
 	if err != nil {
@@ -151,9 +152,17 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	now := metav1.Now()
 
-	// 6. Execute the decision (or just log it when paused).
-	if pool.Spec.Scaling.Paused && d.Action != decision.NoAction {
-		log.Info("scaling PAUSED — would execute but skipping",
+	// 5b. Control-plane role safety enforcement.
+	if pool.Spec.Role == "control-plane" {
+		if pool.Spec.Scaling.Enabled {
+			log.Info("WARNING: scaling.enabled=true on control-plane pool — autoscaling control-plane nodes is risky",
+				"pool", pool.Name)
+		}
+	}
+
+	// 6. Execute the decision (or skip when scaling is disabled).
+	if !pool.Spec.Scaling.Enabled && d.Action != decision.NoAction {
+		log.Info("scaling DISABLED — would execute but skipping",
 			"action", d.Action.String(), "count", d.Count, "reason", d.Reason)
 		pool.Status.Phase = konductorv1alpha1.NodePoolPhaseActive
 		// Still update status so the TUI shows what would happen.
@@ -168,12 +177,38 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			log.Info("scale-up initiated", "count", d.Count)
 
 		case decision.ScaleDown:
-			if err := r.scaleDown(ctx, &pool, &claims, d); err != nil {
-				return ctrl.Result{}, fmt.Errorf("scaling down: %w", err)
+			// Control-plane safety: enforce maxUnavailable=1 and etcd quorum.
+			if pool.Spec.Role == "control-plane" {
+				if d.Count > 1 {
+					log.Info("control-plane pool: clamping scale-down to maxUnavailable=1",
+						"requested", d.Count)
+					d.Count = 1
+					if len(d.TargetNodes) > 1 {
+						d.TargetNodes = d.TargetNodes[:1]
+					}
+				}
+				// Etcd quorum: for N nodes, quorum = (N/2)+1, so never scale below quorum.
+				// E.g. 3 nodes -> quorum 2, 5 nodes -> quorum 3.
+				currentCP := int(activeClaims)
+				quorum := (currentCP / 2) + 1
+				if currentCP-d.Count < quorum {
+					log.Info("control-plane pool: scale-down blocked by etcd quorum",
+						"currentNodes", currentCP, "quorum", quorum, "requestedRemoval", d.Count)
+					d = decision.Decision{
+						Action: decision.NoAction,
+						Reason: fmt.Sprintf("scale-down blocked: would violate etcd quorum (%d/%d nodes)", currentCP-d.Count, quorum),
+					}
+				}
 			}
-			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
-			pool.Status.LastScaleTime = &now
-			log.Info("scale-down initiated", "count", d.Count, "targets", d.TargetNodes)
+
+			if d.Action == decision.ScaleDown {
+				if err := r.scaleDown(ctx, &pool, &claims, d); err != nil {
+					return ctrl.Result{}, fmt.Errorf("scaling down: %w", err)
+				}
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
+				pool.Status.LastScaleTime = &now
+				log.Info("scale-down initiated", "count", d.Count, "targets", d.TargetNodes)
+			}
 
 		case decision.NoAction:
 			if pendingClaims > 0 {
@@ -186,10 +221,11 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// 7. Update NodePool status.
-	pool.Status.CurrentNodes = activeClaims
-	pool.Status.DesiredNodes = computeDesired(activeClaims, d)
-	pool.Status.ReadyNodes = readyClaims
+	// 7. Update NodePool status — use real cluster node counts, not just claims.
+	// This ensures the TUI shows the actual cluster state including manually-created nodes.
+	pool.Status.CurrentNodes = int32(clusterMetrics.TotalNodes)
+	pool.Status.ReadyNodes = int32(clusterMetrics.ReadyNodes)
+	pool.Status.DesiredNodes = computeDesired(int32(clusterMetrics.TotalNodes), d)
 
 	if err := r.Status().Update(ctx, &pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating NodePool status: %w", err)
