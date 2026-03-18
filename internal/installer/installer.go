@@ -96,8 +96,9 @@ type Installer struct {
 // NewInstaller creates a new Installer connected to the cluster specified
 // by the given kubeconfig path and context.
 func NewInstaller(kubeconfig, kubeContext string) (*Installer, error) {
-	loadingRules := &clientcmd.ClientConfigLoadingRules{
-		ExplicitPath: kubeconfig,
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
 	}
 	overrides := &clientcmd.ConfigOverrides{}
 	if kubeContext != "" {
