@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	metricsv1beta1client "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -49,12 +50,21 @@ type NodePoolReconciler struct {
 
 // SetupNodePoolReconciler creates and registers the NodePool controller with the manager.
 func SetupNodePoolReconciler(mgr manager.Manager, engine *decision.Engine, prov provider.Provider) error {
+	// Create a direct metrics client (not cached) because the metrics API
+	// doesn't support Watch which controller-runtime's cache requires.
+	restCfg := mgr.GetConfig()
+	metricsClient, err := metricsv1beta1client.NewForConfig(restCfg)
+	if err != nil {
+		// Non-fatal: operator works without metrics (uses pending pods only).
+		metricsClient = nil
+	}
+
 	r := &NodePoolReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		Engine:           engine,
 		Provider:         prov,
-		metricsCollector: NewMetricsCollector(mgr.GetClient()),
+		metricsCollector: NewMetricsCollector(mgr.GetClient(), metricsClient),
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

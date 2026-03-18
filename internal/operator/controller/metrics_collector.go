@@ -7,7 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	metricsv1beta1api "k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -18,12 +18,14 @@ import (
 // metrics-server (metrics.k8s.io/v1beta1). It produces the ClusterMetrics
 // struct consumed by the decision engine.
 type MetricsCollector struct {
-	client client.Client
+	client        client.Client
+	metricsClient metricsv1beta1.Interface
 }
 
-// NewMetricsCollector creates a new collector backed by the given controller-runtime client.
-func NewMetricsCollector(c client.Client) *MetricsCollector {
-	return &MetricsCollector{client: c}
+// NewMetricsCollector creates a new collector. The metricsClient is a direct
+// client for metrics.k8s.io (not cached) because the metrics API doesn't support Watch.
+func NewMetricsCollector(c client.Client, mc metricsv1beta1.Interface) *MetricsCollector {
+	return &MetricsCollector{client: c, metricsClient: mc}
 }
 
 // Collect gathers CPU/memory utilization per node, pending pod counts, and
@@ -131,14 +133,17 @@ type nodeMetrics struct {
 // fetchNodeMetrics retrieves resource usage from the metrics API for nodes
 // that belong to the pool.
 func (c *MetricsCollector) fetchNodeMetrics(ctx context.Context, poolNodes map[string]*corev1.Node) (map[string]nodeMetrics, error) {
-	var metricsList metricsv1beta1api.NodeMetricsList
-	if err := c.client.List(ctx, &metricsList); err != nil {
+	if c.metricsClient == nil {
+		return nil, fmt.Errorf("metrics client not available")
+	}
+
+	metricsList, err := c.metricsClient.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
+	if err != nil {
 		return nil, fmt.Errorf("listing node metrics: %w", err)
 	}
 
 	result := make(map[string]nodeMetrics, len(metricsList.Items))
 	for _, m := range metricsList.Items {
-		// Only include metrics for nodes in the pool.
 		if _, ok := poolNodes[m.Name]; !ok {
 			continue
 		}
