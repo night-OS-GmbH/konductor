@@ -260,4 +260,6 @@ pkg/version/              Version info
 
 ## License
 
-Private — Night-OS GmbH
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+Copyright 2025-2026 Night-OS GmbH
