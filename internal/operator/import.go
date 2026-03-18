@@ -268,24 +268,29 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 						"configSecretRef": "talos-worker-config",
 					},
 				},
-				"status": map[string]interface{}{
-					"phase":      "Ready",
-					"providerID": node.ProviderID,
-					"nodeName":   node.Name,
-					"readyAt":    now,
-					"createdAt":  now,
-				},
 			},
 		}
 
-		if node.InternalIP != "" {
-			status := claimObj.Object["status"].(map[string]interface{})
-			status["ips"] = []interface{}{node.InternalIP}
-		}
-
-		_, err = dynClient.Resource(nodeClaimGVR).Create(ctx, claimObj, metav1.CreateOptions{})
+		created, err := dynClient.Resource(nodeClaimGVR).Create(ctx, claimObj, metav1.CreateOptions{})
 		if err != nil {
 			return fmt.Errorf("creating NodeClaim for node %q: %w", node.Name, err)
+		}
+
+		// Status must be set separately via the /status sub-resource.
+		// Kubernetes ignores status fields during a normal Create.
+		created.Object["status"] = map[string]interface{}{
+			"phase":      "Ready",
+			"providerID": node.ProviderID,
+			"nodeName":   node.Name,
+			"readyAt":    now,
+			"createdAt":  now,
+		}
+		if node.InternalIP != "" {
+			created.Object["status"].(map[string]interface{})["ips"] = []interface{}{node.InternalIP}
+		}
+		_, err = dynClient.Resource(nodeClaimGVR).UpdateStatus(ctx, created, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("setting NodeClaim status for node %q: %w", node.Name, err)
 		}
 	}
 
