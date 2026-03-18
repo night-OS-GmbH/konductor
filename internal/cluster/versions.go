@@ -5,5 +5,5 @@ package cluster
 var RecommendedVersions = map[string]string{
 	"metrics-server":     "v0.8.1",
 	"hetzner-ccm":        "v1.30.1",
-	"konductor-operator": "latest",
+	"konductor-operator": "main",
 }

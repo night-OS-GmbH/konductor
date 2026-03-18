@@ -57,7 +57,9 @@ func (k *KonductorOperator) Check(ctx context.Context) (*cluster.ComponentStatus
 	status.Installed = opStatus.Installed
 	status.Healthy = opStatus.Ready
 	status.Version = opStatus.Version
-	status.NeedsUpdate = status.Version != "" && status.Version != recommended
+	// Only flag as outdated if both versions are semver and installed is older.
+	// Non-semver tags like "main" or "latest" are not comparable.
+	status.NeedsUpdate = status.Version != "" && cluster.VersionOlderThan(status.Version, recommended)
 
 	return status, nil
 }
