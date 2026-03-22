@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -561,9 +562,15 @@ func (r *NodeClaimReconciler) readTalosConfig(ctx context.Context, claim *konduc
 		return "", fmt.Errorf("NodeClaim %s has no talos.configSecretRef", claim.Name)
 	}
 
+	// NodeClaims are cluster-scoped, so use the operator's namespace to find secrets.
+	secretNamespace := os.Getenv("POD_NAMESPACE")
+	if secretNamespace == "" {
+		secretNamespace = "konductor-system"
+	}
+
 	var secret corev1.Secret
 	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: claim.Namespace,
+		Namespace: secretNamespace,
 		Name:      secretName,
 	}, &secret); err != nil {
 		return "", fmt.Errorf("reading Talos config secret %s: %w", secretName, err)
