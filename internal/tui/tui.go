@@ -453,7 +453,10 @@ func (m model) detectTalosVersion() string {
 	return ver
 }
 
-// getHetznerProvider creates a Hetzner provider from the config token.
+// getHetznerProvider creates a Hetzner provider, trying multiple token sources:
+// 1. Local config (~/.konductor/config.yaml hetzner.token)
+// 2. HCLOUD_TOKEN environment variable
+// 3. konductor-secrets Secret in the cluster (set during onboarding)
 func (m model) getHetznerProvider() (*hetzner.HetznerProvider, error) {
 	token := ""
 	if len(m.cfg.Clusters) > 0 {
@@ -461,6 +464,17 @@ func (m model) getHetznerProvider() (*hetzner.HetznerProvider, error) {
 	}
 	if token == "" {
 		token = os.Getenv("HCLOUD_TOKEN")
+	}
+	// Fall back to reading the token from the cluster secret.
+	if token == "" && m.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		secret, err := m.client.Clientset().CoreV1().Secrets("konductor-system").Get(ctx, "konductor-secrets", metav1.GetOptions{})
+		if err == nil {
+			if t, ok := secret.Data["hcloud-token"]; ok {
+				token = string(t)
+			}
+		}
 	}
 	if token == "" {
 		return nil, fmt.Errorf("no Hetzner Cloud token configured")
