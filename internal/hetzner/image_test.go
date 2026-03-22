@@ -29,9 +29,9 @@ func TestBuilderServerType(t *testing.T) {
 		arch string
 		want string
 	}{
-		{"amd64", "cx22"},
+		{"amd64", "cx23"},
 		{"arm64", "cax11"},
-		{"", "cx22"},
+		{"", "cx23"},
 	}
 	for _, tt := range tests {
 		if got := builderServerType(tt.arch); got != tt.want {
