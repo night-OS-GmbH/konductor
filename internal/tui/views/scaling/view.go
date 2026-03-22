@@ -808,8 +808,8 @@ func (m Model) viewNoPool(panelW, height int) string {
 }
 
 func (m Model) viewMultiPoolDashboard(panelW, height int) string {
-	// In detail or edit mode, show full-panel detail.
-	if m.poolMode == poolModeDetail || m.poolMode == poolModeEdit {
+	// In detail, edit, or delete confirmation mode, show full-panel detail.
+	if m.poolMode == poolModeDetail || m.poolMode == poolModeEdit || m.poolMode == poolModeDelete {
 		if m.selectedPool < len(m.scaling.Pools) {
 			return m.viewPoolDetailFull(m.scaling.Pools[m.selectedPool], panelW, height)
 		}
