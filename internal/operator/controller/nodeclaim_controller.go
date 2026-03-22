@@ -570,7 +570,7 @@ func (r *NodeClaimReconciler) readTalosConfig(ctx context.Context, claim *konduc
 	}
 
 	// Look for "worker.yaml" or "config" key in the secret data.
-	for _, key := range []string{"worker.yaml", "config", "machine-config"} {
+	for _, key := range []string{"talos-worker-config", "worker.yaml", "config", "machine-config"} {
 		if data, ok := secret.Data[key]; ok {
 			return string(data), nil
 		}

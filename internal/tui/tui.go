@@ -387,7 +387,7 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 						"cooldownSeconds": int64(300),
 					},
 					"talos": map[string]interface{}{
-						"configSecretRef": "talos-worker-config",
+						"configSecretRef": "konductor-secrets",
 					},
 				},
 			},

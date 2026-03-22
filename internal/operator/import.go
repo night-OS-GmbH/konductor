@@ -213,7 +213,7 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 					},
 				},
 				"talos": map[string]interface{}{
-					"configSecretRef": "talos-worker-config",
+					"configSecretRef": "konductor-secrets",
 				},
 			},
 		},
@@ -265,7 +265,7 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 						"location":   pool.Location,
 					},
 					"talos": map[string]interface{}{
-						"configSecretRef": "talos-worker-config",
+						"configSecretRef": "konductor-secrets",
 					},
 				},
 			},
