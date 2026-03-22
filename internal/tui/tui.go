@@ -506,23 +506,55 @@ func (m model) checkTalosImage(talosVersion, arch string) tea.Cmd {
 	}
 }
 
-// createTalosImage creates a Talos snapshot on Hetzner Cloud with progress updates.
+// createTalosImage creates a Talos snapshot on Hetzner Cloud with live progress updates.
+// It launches the image creation in a goroutine and sends progress via a channel.
+// Each imageProgressMsg carries a `next` command to read the next update.
 func (m model) createTalosImage(talosVersion, arch string) tea.Cmd {
-	return func() tea.Msg {
+	ch := make(chan tea.Msg, 10)
+
+	go func() {
+		defer close(ch)
+
 		prov, err := m.getHetznerProvider()
 		if err != nil {
-			return imageCreateMsg{err: err}
+			ch <- imageCreateMsg{err: err}
+			return
 		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+
 		result, err := prov.CreateTalosImage(ctx, hetzner.ImageCreateOpts{
 			TalosVersion: talosVersion,
 			Arch:         arch,
+			OnProgress: func(step, total int, message string) {
+				ch <- imageProgressMsg{step: step, total: total, message: message}
+			},
 		})
 		if err != nil {
-			return imageCreateMsg{err: err}
+			ch <- imageCreateMsg{err: err}
+		} else {
+			ch <- imageCreateMsg{imageID: result.ImageID}
 		}
-		return imageCreateMsg{imageID: result.ImageID}
+	}()
+
+	return readImageChannel(ch)
+}
+
+// readImageChannel returns a tea.Cmd that reads one message from the channel.
+// For progress messages, it attaches itself as `next` so the handler can continue reading.
+func readImageChannel(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return imageCreateMsg{err: fmt.Errorf("image creation channel closed unexpectedly")}
+		}
+		// If it's a progress message, attach the next-read command.
+		if p, isProgress := msg.(imageProgressMsg); isProgress {
+			p.next = readImageChannel(ch)
+			return p
+		}
+		return msg
 	}
 }
 
@@ -720,7 +752,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case imageProgressMsg:
 		m.scalingView.ShowImageProgress(fmt.Sprintf("[%d/%d] %s", msg.step, msg.total, msg.message))
-		return m, nil
+		return m, msg.next // continue reading from the channel
 
 	case imageCreateMsg:
 		if msg.err != nil {

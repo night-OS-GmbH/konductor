@@ -1,6 +1,7 @@
 package tui
 
 import (
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
 	"github.com/night-OS-GmbH/konductor/internal/operator"
 	"github.com/night-OS-GmbH/konductor/internal/tui/views/scaling"
@@ -79,8 +80,10 @@ type imageCreateMsg struct {
 }
 
 // imageProgressMsg carries progress updates during image creation.
+// The next field is a command that reads the next message from the channel.
 type imageProgressMsg struct {
 	step    int
 	total   int
 	message string
+	next    tea.Cmd
 }
