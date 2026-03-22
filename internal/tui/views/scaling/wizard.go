@@ -49,12 +49,14 @@ type WizardModel struct {
 	done        bool
 
 	// NodePool wizard state.
+	npName       string
+	npNameManual bool // true if user manually edited the name
 	npServerType string
 	npLocation   string
 	npMinNodes   string
 	npMaxNodes   string
 	npEnabled    bool
-	npField      int // which field is being edited (0=serverType, 1=location, 2=min, 3=max)
+	npField      int // which field is being edited (0=name, 1=serverType, 2=location, 3=min, 4=max, 5=enabled)
 
 	// Import wizard state.
 	importPools []operator.SuggestedPool
@@ -478,6 +480,7 @@ func NewNodePoolWizard() *WizardModel {
 		visible:      true,
 		component:    "nodepool",
 		step:         stepNPServerType,
+		npName:       "workers-cpx31-nbg1",
 		npServerType: "cpx31",
 		npLocation:   "nbg1",
 		npMinNodes:   "3",
@@ -486,13 +489,22 @@ func NewNodePoolWizard() *WizardModel {
 	}
 }
 
+// autoGeneratePoolName updates the pool name from serverType and location,
+// unless the user has manually edited it.
+func (w *WizardModel) autoGeneratePoolName() {
+	if w.npNameManual {
+		return
+	}
+	w.npName = "workers-" + w.npServerType + "-" + w.npLocation
+}
+
 func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 		w.visible = false
 		return w, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab", "down", "j"))):
-		if w.npField < 4 {
+		if w.npField < 5 {
 			w.npField++
 		}
 		return w, nil
@@ -502,7 +514,7 @@ func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 		}
 		return w, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		if w.npField == 4 {
+		if w.npField == 5 {
 			// Toggle enabled.
 			w.npEnabled = !w.npEnabled
 			return w, nil
@@ -515,15 +527,19 @@ func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 		w.deleteFieldChar()
 		return w, nil
 	case key.Matches(msg, key.NewBinding(key.WithKeys(" "))):
-		if w.npField == 4 {
+		if w.npField == 5 {
 			w.npEnabled = !w.npEnabled
 			return w, nil
 		}
 	}
 
 	// Character input for text fields.
-	if len(msg.Runes) > 0 && w.npField < 4 {
+	if len(msg.Runes) > 0 && w.npField < 5 {
 		w.appendFieldChar(string(msg.Runes))
+		// Auto-update name when serverType or location changes.
+		if w.npField == 1 || w.npField == 2 {
+			w.autoGeneratePoolName()
+		}
 	}
 
 	return w, nil
@@ -532,12 +548,15 @@ func (w WizardModel) updateNodePool(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 func (w *WizardModel) appendFieldChar(ch string) {
 	switch w.npField {
 	case 0:
-		w.npServerType += ch
+		w.npName += ch
+		w.npNameManual = true
 	case 1:
-		w.npLocation += ch
+		w.npServerType += ch
 	case 2:
-		w.npMinNodes += ch
+		w.npLocation += ch
 	case 3:
+		w.npMinNodes += ch
+	case 4:
 		w.npMaxNodes += ch
 	}
 }
@@ -545,18 +564,23 @@ func (w *WizardModel) appendFieldChar(ch string) {
 func (w *WizardModel) deleteFieldChar() {
 	switch w.npField {
 	case 0:
+		if len(w.npName) > 0 {
+			w.npName = w.npName[:len(w.npName)-1]
+			w.npNameManual = true
+		}
+	case 1:
 		if len(w.npServerType) > 0 {
 			w.npServerType = w.npServerType[:len(w.npServerType)-1]
 		}
-	case 1:
+	case 2:
 		if len(w.npLocation) > 0 {
 			w.npLocation = w.npLocation[:len(w.npLocation)-1]
 		}
-	case 2:
+	case 3:
 		if len(w.npMinNodes) > 0 {
 			w.npMinNodes = w.npMinNodes[:len(w.npMinNodes)-1]
 		}
-	case 3:
+	case 4:
 		if len(w.npMaxNodes) > 0 {
 			w.npMaxNodes = w.npMaxNodes[:len(w.npMaxNodes)-1]
 		}
@@ -577,6 +601,7 @@ func (w WizardModel) updateNPConfirm(msg tea.KeyMsg) (WizardModel, tea.Cmd) {
 
 		return w, func() tea.Msg {
 			return CreateNodePoolMsg{
+				Name:       w.npName,
 				ServerType: w.npServerType,
 				Location:   w.npLocation,
 				MinNodes:   minN,
@@ -602,6 +627,7 @@ func (w WizardModel) viewNodePoolForm(panelW int) string {
 		label string
 		value string
 	}{
+		{"Name", w.npName},
 		{"Server Type", w.npServerType},
 		{"Location", w.npLocation},
 		{"Min Nodes", w.npMinNodes},
@@ -636,7 +662,7 @@ func (w WizardModel) viewNodePoolForm(panelW int) string {
 	} else {
 		enabledVal = styles.HealthyStyle.Render("[x]") + " " + dim.Render("disabled -- observe-only, no scaling actions")
 	}
-	if w.npField == 4 {
+	if w.npField == 5 {
 		enabledLabel = lipgloss.NewStyle().Width(labelW).Foreground(styles.ColorPrimary).Bold(true).Render("Scaling:")
 	}
 	lines = append(lines, "  "+enabledLabel+" "+enabledVal)

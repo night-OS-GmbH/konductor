@@ -366,7 +366,7 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 				"apiVersion": "konductor.io/v1alpha1",
 				"kind":       "NodePool",
 				"metadata": map[string]interface{}{
-					"name": "default-workers",
+					"name": msg.Name,
 				},
 				"spec": map[string]interface{}{
 					"provider": "hetzner",
@@ -413,6 +413,31 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 		}
 
 		return installResultMsg{component: "nodepool", err: nil}
+	}
+}
+
+// deleteNodePool deletes a NodePool CRD from the cluster.
+func (m model) deleteNodePool(poolName string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		dynClient, err := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+		if err != nil {
+			return installResultMsg{component: "delete-pool", err: err}
+		}
+
+		gvr := schema.GroupVersionResource{
+			Group:    "konductor.io",
+			Version:  "v1alpha1",
+			Resource: "nodepools",
+		}
+
+		if err := dynClient.Resource(gvr).Delete(ctx, poolName, metav1.DeleteOptions{}); err != nil {
+			return installResultMsg{component: "delete-pool", err: fmt.Errorf("deleting NodePool %q: %w", poolName, err)}
+		}
+
+		return scalingDataMsg{info: nil, err: nil} // trigger data refresh
 	}
 }
 
@@ -695,6 +720,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.createNodePool(*poolMsg)
 		}
 		return m, nil
+
+	case scaling.DeleteNodePoolMsg:
+		return m, m.deleteNodePool(msg.PoolName)
 
 	case scaling.ImportNodesMsg:
 		// Trigger node discovery.

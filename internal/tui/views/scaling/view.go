@@ -41,11 +41,17 @@ type InstallComponentMsg struct {
 
 // CreateNodePoolMsg is emitted when the user confirms NodePool creation.
 type CreateNodePoolMsg struct {
+	Name       string
 	ServerType string
 	Location   string
 	MinNodes   int32
 	MaxNodes   int32
 	Enabled    bool
+}
+
+// DeleteNodePoolMsg is emitted when the user confirms pool deletion.
+type DeleteNodePoolMsg struct {
+	PoolName string
 }
 
 // ImportNodesMsg is emitted when the user triggers node import detection.
@@ -70,6 +76,7 @@ const (
 	poolModeList   poolViewMode = iota // Pool list (j/k navigate, Enter → detail)
 	poolModeDetail                     // Pool detail (Esc → back to list)
 	poolModeEdit                       // Editing a pool field
+	poolModeDelete                     // Delete confirmation
 )
 
 type focusPanel int
@@ -125,7 +132,7 @@ func (m *Model) SetError(err error) {
 
 // InPoolDetail returns true when viewing a pool's detail page.
 func (m Model) InPoolDetail() bool {
-	return m.poolMode == poolModeDetail || m.poolMode == poolModeEdit
+	return m.poolMode == poolModeDetail || m.poolMode == poolModeEdit || m.poolMode == poolModeDelete
 }
 
 // InPoolEdit returns true when editing a pool's fields.
@@ -216,6 +223,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	// Pool edit mode handles its own keys.
 	if m.poolMode == poolModeEdit {
 		return m.updatePoolEdit(keyMsg)
+	}
+
+	// Pool delete confirmation.
+	if m.poolMode == poolModeDelete {
+		return m.updatePoolDelete(keyMsg)
 	}
 
 	// Pool detail mode.
@@ -330,12 +342,36 @@ func (m Model) updatePoolDetailKeys(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 			m.editBuffer = fmt.Sprintf("%d", m.scaling.Pools[m.selectedPool].MinNodes)
 		}
 		return m, nil
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("d"))):
+		// Enter delete confirmation mode.
+		m.poolMode = poolModeDelete
+		return m, nil
 	}
 	return m, nil
 }
 
 func (m Model) updatePoolDetail(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
 	return m.updatePoolDetailKeys(keyMsg)
+}
+
+func (m Model) updatePoolDelete(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.scaling == nil || m.selectedPool >= len(m.scaling.Pools) {
+		m.poolMode = poolModeList
+		return m, nil
+	}
+	pool := m.scaling.Pools[m.selectedPool]
+	switch {
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("y", "enter"))):
+		m.poolMode = poolModeList
+		m.selectedPool = 0
+		return m, func() tea.Msg {
+			return DeleteNodePoolMsg{PoolName: pool.Name}
+		}
+	case key.Matches(keyMsg, key.NewBinding(key.WithKeys("n", "esc"))):
+		m.poolMode = poolModeDetail
+		return m, nil
+	}
+	return m, nil
 }
 
 func (m Model) updatePoolEdit(keyMsg tea.KeyMsg) (Model, tea.Cmd) {
@@ -1026,7 +1062,12 @@ func (m Model) viewPoolDetailFull(pool k8s.NodePoolInfo, panelW, height int) str
 			}
 		}
 		lines = append(lines, "")
-		lines = append(lines, dim.Render("e edit  esc back"))
+		if m.poolMode == poolModeDelete {
+			lines = append(lines, styles.CriticalStyle.Render(fmt.Sprintf("Delete pool %q? All managed nodes will be removed.", pool.Name)))
+			lines = append(lines, dim.Render("y confirm  n/esc cancel"))
+		} else {
+			lines = append(lines, dim.Render("e edit  d delete  esc back"))
+		}
 	}
 
 	content := strings.Join(lines, "\n")
