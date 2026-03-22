@@ -388,6 +388,7 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 					},
 					"talos": map[string]interface{}{
 						"configSecretRef": "konductor-secrets",
+						"version":         m.detectTalosVersion(),
 					},
 				},
 			},
@@ -406,6 +407,18 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 
 		return installResultMsg{component: "nodepool", err: nil}
 	}
+}
+
+// detectTalosVersion auto-detects the Talos version from the connected cluster.
+// Returns the version string (e.g. "v1.11.5") or empty string on failure.
+func (m model) detectTalosVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ver, err := m.client.GetTalosVersion(ctx)
+	if err != nil || ver == "" {
+		return ""
+	}
+	return ver
 }
 
 // discoverNodes discovers existing K8s nodes and suggests pools for import.

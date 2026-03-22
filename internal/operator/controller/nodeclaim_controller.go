@@ -154,6 +154,25 @@ func (r *NodeClaimReconciler) reconcilePending(ctx context.Context, claim *kondu
 		providerLabels[k] = v
 	}
 
+	// Determine the Talos version: prefer spec, fall back to cluster auto-detection.
+	talosVersion := claim.Spec.Talos.Version
+	if talosVersion == "" {
+		talosVersion = r.detectTalosVersionFromCluster(ctx)
+		if talosVersion != "" {
+			log.Info("auto-detected Talos version from cluster", "version", talosVersion)
+		}
+	}
+
+	// Build image label selector from Talos version if no explicit image is set.
+	imageLabelSelector := ""
+	if claim.Spec.ProviderConfig.Image != "" {
+		imageLabelSelector = claim.Spec.ProviderConfig.Image
+	} else if talosVersion != "" {
+		arch := archFromServerType(claim.Spec.ProviderConfig.ServerType)
+		imageLabelSelector = fmt.Sprintf("os=talos,talos-version=%s,arch=%s", talosVersion, arch)
+		log.Info("resolved image label selector", "selector", imageLabelSelector)
+	}
+
 	// Provision the node.
 	opts := provider.CreateNodeOpts{
 		Name:               nodeName,
@@ -164,6 +183,7 @@ func (r *NodeClaimReconciler) reconcilePending(ctx context.Context, claim *kondu
 		SSHKeyName:         claim.Spec.ProviderConfig.SSHKeyName,
 		NetworkName:        claim.Spec.ProviderConfig.Network,
 		PlacementGroupName: claim.Spec.ProviderConfig.PlacementGroup,
+		ImageLabelSelector: imageLabelSelector,
 	}
 
 	node, err := r.Provider.CreateNode(ctx, opts)
@@ -661,4 +681,30 @@ func isDaemonSetPod(pod *corev1.Pod) bool {
 // isSystemNamespace returns true for namespaces that contain system-critical pods.
 func isSystemNamespace(ns string) bool {
 	return strings.HasPrefix(ns, "kube-") || ns == "konductor-system"
+}
+
+// detectTalosVersionFromCluster reads the OS image from cluster nodes to determine
+// the running Talos version. Returns e.g. "v1.11.5" or empty string on failure.
+func (r *NodeClaimReconciler) detectTalosVersionFromCluster(ctx context.Context) string {
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes, client.Limit(3)); err != nil {
+		return ""
+	}
+	for _, node := range nodes.Items {
+		osImage := node.Status.NodeInfo.OSImage
+		// Format: "Talos (v1.11.5)"
+		if strings.HasPrefix(osImage, "Talos (") && strings.HasSuffix(osImage, ")") {
+			return osImage[7 : len(osImage)-1]
+		}
+	}
+	return ""
+}
+
+// archFromServerType derives the CPU architecture from the Hetzner server type.
+// Hetzner ARM servers use the "cax" prefix; everything else is amd64.
+func archFromServerType(serverType string) string {
+	if strings.HasPrefix(serverType, "cax") {
+		return "arm64"
+	}
+	return "amd64"
 }

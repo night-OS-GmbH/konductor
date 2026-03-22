@@ -178,6 +178,9 @@ func SuggestPools(nodes []DiscoveredNode) []SuggestedPool {
 func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kubernetes.Interface, pool SuggestedPool) error {
 	nodeCount := int64(len(pool.Nodes))
 
+	// Detect Talos version from cluster nodes.
+	talosVersion := detectTalosVersion(ctx, clientset)
+
 	// 1. Create the NodePool CR.
 	nodePoolObj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -214,6 +217,7 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 				},
 				"talos": map[string]interface{}{
 					"configSecretRef": "konductor-secrets",
+					"version":         talosVersion,
 				},
 			},
 		},
@@ -266,6 +270,7 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 					},
 					"talos": map[string]interface{}{
 						"configSecretRef": "konductor-secrets",
+						"version":         talosVersion,
 					},
 				},
 			},
@@ -307,4 +312,21 @@ func ImportNodes(ctx context.Context, dynClient dynamic.Interface, clientset kub
 	}
 
 	return nil
+}
+
+// detectTalosVersion reads the Talos version from cluster nodes' OS image field.
+// Returns e.g. "v1.11.5" or empty string if not detectable.
+func detectTalosVersion(ctx context.Context, clientset kubernetes.Interface) string {
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 3})
+	if err != nil {
+		return ""
+	}
+	for _, node := range nodes.Items {
+		osImage := node.Status.NodeInfo.OSImage
+		// Format: "Talos (v1.11.5)"
+		if strings.HasPrefix(osImage, "Talos (") && strings.HasSuffix(osImage, ")") {
+			return osImage[7 : len(osImage)-1]
+		}
+	}
+	return ""
 }
