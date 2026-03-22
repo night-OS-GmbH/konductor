@@ -197,8 +197,29 @@ func (p *HetznerProvider) CreateTalosImage(ctx context.Context, opts ImageCreate
 		return nil, fmt.Errorf("creating snapshot: %w", err)
 	}
 
+	imageID := snapshotResult.Image.ID
+
+	// Wait for the snapshot to become available before returning.
+	// The operator filters for available images, so we must not return early.
+	progress(5, totalSteps, "Waiting for snapshot to become available...")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting for snapshot %d to become available: %w", imageID, ctx.Err())
+		default:
+		}
+		img, _, err := p.client.api.Image.GetByID(ctx, imageID)
+		if err != nil {
+			return nil, fmt.Errorf("polling snapshot status: %w", err)
+		}
+		if img != nil && img.Status == hcloud.ImageStatusAvailable {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+
 	return &ImageCreateResult{
-		ImageID:      snapshotResult.Image.ID,
+		ImageID:      imageID,
 		TalosVersion: opts.TalosVersion,
 		Arch:         opts.Arch,
 	}, nil
