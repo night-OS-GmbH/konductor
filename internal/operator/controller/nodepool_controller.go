@@ -97,7 +97,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Count claims by phase.
-	var readyClaims, activeClaims, pendingClaims int32
+	var readyClaims, activeClaims, pendingClaims, failedClaims int32
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		switch claim.Status.Phase {
@@ -113,7 +113,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			konductorv1alpha1.NodeClaimPhaseDeleting:
 			// Node is going away, do not count as active.
 		case konductorv1alpha1.NodeClaimPhaseFailed:
-			// Failed claims are not active capacity.
+			failedClaims++
 		}
 	}
 
@@ -179,12 +179,25 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	} else {
 		switch d.Action {
 		case decision.ScaleUp:
-			if err := r.scaleUp(ctx, &pool, d.Count); err != nil {
-				return ctrl.Result{}, fmt.Errorf("scaling up: %w", err)
+			// Block scale-up if there are failed claims — indicates a config problem
+			// (e.g. missing Talos secret) that must be resolved first.
+			if failedClaims > 0 {
+				log.Info("scale-up blocked: failed NodeClaims exist, resolve errors before scaling",
+					"failedClaims", failedClaims, "reason", d.Reason)
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseDegraded
+			} else if pendingClaims > 0 {
+				// Already scaling up — don't create more claims.
+				log.Info("scale-up skipped: claims already pending",
+					"pendingClaims", pendingClaims)
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
+			} else {
+				if err := r.scaleUp(ctx, &pool, d.Count); err != nil {
+					return ctrl.Result{}, fmt.Errorf("scaling up: %w", err)
+				}
+				pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
+				pool.Status.LastScaleTime = &now
+				log.Info("scale-up initiated", "count", d.Count)
 			}
-			pool.Status.Phase = konductorv1alpha1.NodePoolPhaseScaling
-			pool.Status.LastScaleTime = &now
-			log.Info("scale-up initiated", "count", d.Count)
 
 		case decision.ScaleDown:
 			// Control-plane safety: enforce maxUnavailable=1 and etcd quorum.
