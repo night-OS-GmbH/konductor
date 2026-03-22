@@ -159,6 +159,18 @@ func (m *Model) UpdateWizardProgress(msg InstallProgressMsg) {
 	}
 }
 
+// ShowImageProgress updates the wizard's progress message for image operations.
+// Pass an empty string to clear the progress message.
+func (m *Model) ShowImageProgress(message string) {
+	if m.wizard == nil {
+		return
+	}
+	m.wizard.progressMsg = message
+	if message != "" {
+		m.wizard.step = stepInstalling
+	}
+}
+
 // UpdateImportDetect forwards discovered pools to the import wizard.
 func (m *Model) UpdateImportDetect(pools []operator.SuggestedPool, err error) {
 	if m.wizard == nil {

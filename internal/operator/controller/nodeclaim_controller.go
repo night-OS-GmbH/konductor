@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	konductorv1alpha1 "github.com/night-OS-GmbH/konductor/api/v1alpha1"
+	"github.com/night-OS-GmbH/konductor/internal/hetzner"
 	"github.com/night-OS-GmbH/konductor/internal/provider"
 	"github.com/night-OS-GmbH/konductor/internal/talos"
 )
@@ -168,7 +169,7 @@ func (r *NodeClaimReconciler) reconcilePending(ctx context.Context, claim *kondu
 	if claim.Spec.ProviderConfig.Image != "" {
 		imageLabelSelector = claim.Spec.ProviderConfig.Image
 	} else if talosVersion != "" {
-		arch := archFromServerType(claim.Spec.ProviderConfig.ServerType)
+		arch := hetzner.ArchFromServerType(claim.Spec.ProviderConfig.ServerType)
 		imageLabelSelector = fmt.Sprintf("os=talos,talos-version=%s,arch=%s", talosVersion, arch)
 		log.Info("resolved image label selector", "selector", imageLabelSelector)
 	}
@@ -700,11 +701,3 @@ func (r *NodeClaimReconciler) detectTalosVersionFromCluster(ctx context.Context)
 	return ""
 }
 
-// archFromServerType derives the CPU architecture from the Hetzner server type.
-// Hetzner ARM servers use the "cax" prefix; everything else is amd64.
-func archFromServerType(serverType string) string {
-	if strings.HasPrefix(serverType, "cax") {
-		return "arm64"
-	}
-	return "amd64"
-}

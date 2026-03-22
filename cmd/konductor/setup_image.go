@@ -6,14 +6,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	"github.com/night-OS-GmbH/konductor/internal/hetzner"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
 	"github.com/spf13/cobra"
 )
-
-// defaultSchematicID is the vanilla Talos schematic (no extensions).
-const defaultSchematicID = "376567988ad370138ad8b2698212367b8edcb69b5fd68c80be1f2ec7d603b4ba"
 
 func operatorSetupImageCmd() *cobra.Command {
 	var (
@@ -112,97 +108,25 @@ Examples:
 				return nil
 			}
 
-			imageURL := fmt.Sprintf("https://factory.talos.dev/image/%s/%s/hcloud-%s.raw.xz",
-				schematicID, talosVersion, arch)
-
 			fmt.Printf("Creating Talos %s (%s) snapshot on Hetzner Cloud...\n\n", talosVersion, arch)
 
-			// Step 1: Create temporary server.
-			fmt.Println("[1/6] Creating temporary server...")
-			tempServer, _, err := hcloudClient.API().Server.Create(ctx, hcloud.ServerCreateOpts{
-				Name:       "konductor-talos-builder",
-				ServerType: &hcloud.ServerType{Name: "cx22"},
-				Image:      &hcloud.Image{Name: "debian-12"},
-				Location:   &hcloud.Location{Name: "nbg1"},
-				Labels:     map[string]string{"purpose": "talos-snapshot-builder"},
-			})
-			if err != nil {
-				return fmt.Errorf("creating temp server: %w", err)
-			}
-			serverID := tempServer.Server.ID
-			serverIP := ""
-			if tempServer.Server.PublicNet.IPv4.IP != nil {
-				serverIP = tempServer.Server.PublicNet.IPv4.IP.String()
-			}
-
-			// Always clean up the temporary server.
-			defer func() {
-				fmt.Println("\n[6/6] Cleaning up temporary server...")
-				cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cleanCancel()
-				_, _, _ = hcloudClient.API().Server.DeleteWithResult(cleanCtx, &hcloud.Server{ID: serverID})
-				fmt.Println("Temporary server deleted.")
-			}()
-
-			// Step 2: Enable rescue mode.
-			fmt.Println("[2/6] Enabling rescue mode...")
-			rescueResult, _, err := hcloudClient.API().Server.EnableRescue(ctx, &hcloud.Server{ID: serverID}, hcloud.ServerEnableRescueOpts{
-				Type: hcloud.ServerRescueTypeLinux64,
-			})
-			if err != nil {
-				return fmt.Errorf("enabling rescue mode: %w", err)
-			}
-
-			// Step 3: Reboot into rescue.
-			fmt.Println("[3/6] Rebooting into rescue mode...")
-			_, _, err = hcloudClient.API().Server.Reset(ctx, &hcloud.Server{ID: serverID})
-			if err != nil {
-				return fmt.Errorf("resetting server: %w", err)
-			}
-
-			fmt.Println("    Waiting for rescue system (30s)...")
-			time.Sleep(30 * time.Second)
-
-			// Step 4: User writes image via SSH.
-			fmt.Println("[4/6] Write Talos image to disk")
-			fmt.Println()
-			fmt.Println("    Run this command in another terminal:")
-			fmt.Println()
-			fmt.Printf("    ssh -o StrictHostKeyChecking=no root@%s \\\n", serverIP)
-			fmt.Printf("      'wget -qO- %s | xz -d | dd of=/dev/sda bs=4M && sync'\n", imageURL)
-			fmt.Println()
-			fmt.Printf("    Root password: %s\n", rescueResult.RootPassword)
-			fmt.Println()
-			fmt.Print("    Press Enter after the image has been written... ")
-			fmt.Scanln()
-
-			// Step 5: Power off and snapshot.
-			fmt.Println("[5/6] Creating snapshot...")
-			_, _, err = hcloudClient.API().Server.Poweroff(ctx, &hcloud.Server{ID: serverID})
-			if err != nil {
-				return fmt.Errorf("powering off server: %w", err)
-			}
-			time.Sleep(5 * time.Second)
-
-			imgDesc := fmt.Sprintf("Talos %s %s", talosVersion, arch)
-			snapshotResult, _, err := hcloudClient.API().Server.CreateImage(ctx, &hcloud.Server{ID: serverID}, &hcloud.ServerCreateImageOpts{
-				Type:        hcloud.ImageTypeSnapshot,
-				Description: &imgDesc,
-				Labels: map[string]string{
-					"os":            "talos",
-					"talos-version": talosVersion,
-					"arch":          arch,
+			result, err := prov.CreateTalosImage(ctx, hetzner.ImageCreateOpts{
+				TalosVersion: talosVersion,
+				Arch:         arch,
+				SchematicID:  schematicID,
+				OnProgress: func(step, total int, message string) {
+					fmt.Printf("[%d/%d] %s\n", step, total, message)
 				},
 			})
 			if err != nil {
-				return fmt.Errorf("creating snapshot: %w", err)
+				return err
 			}
 
 			fmt.Printf("\nTalos snapshot created successfully!\n\n")
-			fmt.Printf("  Image ID:      %d\n", snapshotResult.Image.ID)
-			fmt.Printf("  Talos Version: %s\n", talosVersion)
-			fmt.Printf("  Architecture:  %s\n", arch)
-			fmt.Printf("  Labels:        os=talos, talos-version=%s, arch=%s\n\n", talosVersion, arch)
+			fmt.Printf("  Image ID:      %d\n", result.ImageID)
+			fmt.Printf("  Talos Version: %s\n", result.TalosVersion)
+			fmt.Printf("  Architecture:  %s\n", result.Arch)
+			fmt.Printf("  Labels:        os=talos, talos-version=%s, arch=%s\n\n", result.TalosVersion, result.Arch)
 			fmt.Println("The operator will find and use this snapshot automatically.")
 
 			return nil
@@ -211,7 +135,7 @@ Examples:
 
 	cmd.Flags().StringVar(&talosVersion, "talos-version", "", "Talos version (auto-detected from cluster if empty)")
 	cmd.Flags().StringVar(&arch, "arch", "amd64", "architecture (amd64 or arm64)")
-	cmd.Flags().StringVar(&schematicID, "schematic-id", defaultSchematicID, "Talos Image Factory schematic ID")
+	cmd.Flags().StringVar(&schematicID, "schematic-id", hetzner.DefaultSchematicID, "Talos Image Factory schematic ID")
 	cmd.Flags().StringVar(&hcloudToken, "hetzner-token", "", "Hetzner Cloud API token (or HCLOUD_TOKEN env)")
 	cmd.Flags().BoolVar(&autoDetect, "detect", true, "auto-detect Talos version from cluster")
 

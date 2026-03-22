@@ -12,6 +12,7 @@ import (
 	"github.com/night-OS-GmbH/konductor/internal/cluster"
 	"github.com/night-OS-GmbH/konductor/internal/cluster/components"
 	"github.com/night-OS-GmbH/konductor/internal/config"
+	"github.com/night-OS-GmbH/konductor/internal/hetzner"
 	"github.com/night-OS-GmbH/konductor/internal/installer"
 	"github.com/night-OS-GmbH/konductor/internal/k8s"
 	"github.com/night-OS-GmbH/konductor/internal/operator"
@@ -91,6 +92,12 @@ type model struct {
 	podsView       pods.Model
 	scalingView    scaling.Model
 	ctxSwitcher    ctxswitcher.Model
+
+	// Hetzner provider for image management (lazy-initialized).
+	hetznerProvider *hetzner.HetznerProvider
+
+	// pendingPoolMsg stores a pool creation request while waiting for image check/creation.
+	pendingPoolMsg *scaling.CreateNodePoolMsg
 }
 
 func newModel(cfg *config.Config, client *k8s.Client) model {
@@ -421,6 +428,65 @@ func (m model) detectTalosVersion() string {
 	return ver
 }
 
+// getHetznerProvider creates a Hetzner provider from the config token.
+func (m model) getHetznerProvider() (*hetzner.HetznerProvider, error) {
+	token := ""
+	if len(m.cfg.Clusters) > 0 {
+		token = m.cfg.Clusters[0].Hetzner.GetToken()
+	}
+	if token == "" {
+		token = os.Getenv("HCLOUD_TOKEN")
+	}
+	if token == "" {
+		return nil, fmt.Errorf("no Hetzner Cloud token configured")
+	}
+	client, err := hetzner.NewClient(token)
+	if err != nil {
+		return nil, err
+	}
+	return hetzner.NewProvider(client), nil
+}
+
+// checkTalosImage checks if a Talos snapshot exists on Hetzner Cloud.
+func (m model) checkTalosImage(talosVersion, arch string) tea.Cmd {
+	return func() tea.Msg {
+		prov, err := m.getHetznerProvider()
+		if err != nil {
+			return imageCheckMsg{err: err, talosVersion: talosVersion, arch: arch}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		img, err := prov.FindTalosImage(ctx, talosVersion, arch)
+		if err != nil {
+			return imageCheckMsg{err: err, talosVersion: talosVersion, arch: arch}
+		}
+		if img != nil {
+			return imageCheckMsg{exists: true, talosVersion: talosVersion, arch: arch, imageID: img.ID}
+		}
+		return imageCheckMsg{exists: false, talosVersion: talosVersion, arch: arch}
+	}
+}
+
+// createTalosImage creates a Talos snapshot on Hetzner Cloud with progress updates.
+func (m model) createTalosImage(talosVersion, arch string) tea.Cmd {
+	return func() tea.Msg {
+		prov, err := m.getHetznerProvider()
+		if err != nil {
+			return imageCreateMsg{err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		result, err := prov.CreateTalosImage(ctx, hetzner.ImageCreateOpts{
+			TalosVersion: talosVersion,
+			Arch:         arch,
+		})
+		if err != nil {
+			return imageCreateMsg{err: err}
+		}
+		return imageCreateMsg{imageID: result.ImageID}
+	}
+}
+
 // discoverNodes discovers existing K8s nodes and suggests pools for import.
 func (m model) discoverNodes() tea.Cmd {
 	return func() tea.Msg {
@@ -575,7 +641,60 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateNodePool(msg)
 
 	case scaling.CreateNodePoolMsg:
-		return m, m.createNodePool(msg)
+		// Before creating the pool, check if the Talos image exists.
+		m.pendingPoolMsg = &msg
+		arch := hetzner.ArchFromServerType(msg.ServerType)
+		talosVersion := m.detectTalosVersion()
+		m.scalingView.ShowImageProgress("Checking Talos image...")
+		return m, m.checkTalosImage(talosVersion, arch)
+
+	case imageCheckMsg:
+		if msg.err != nil {
+			m.scalingView.UpdateWizardProgress(scaling.InstallProgressMsg{
+				Component: "image",
+				Message:   fmt.Sprintf("Image check failed: %s", msg.err),
+				Done:      true,
+				Err:       msg.err,
+			})
+			return m, nil
+		}
+		if msg.exists {
+			// Image already exists, proceed to create pool.
+			m.scalingView.ShowImageProgress("")
+			poolMsg := m.pendingPoolMsg
+			m.pendingPoolMsg = nil
+			if poolMsg != nil {
+				return m, m.createNodePool(*poolMsg)
+			}
+			return m, nil
+		}
+		// Image doesn't exist — create it automatically.
+		m.scalingView.ShowImageProgress("Creating Talos image (this takes 3-5 minutes)...")
+		return m, m.createTalosImage(msg.talosVersion, msg.arch)
+
+	case imageProgressMsg:
+		m.scalingView.ShowImageProgress(fmt.Sprintf("[%d/%d] %s", msg.step, msg.total, msg.message))
+		return m, nil
+
+	case imageCreateMsg:
+		if msg.err != nil {
+			m.scalingView.UpdateWizardProgress(scaling.InstallProgressMsg{
+				Component: "image",
+				Message:   fmt.Sprintf("Image creation failed: %s", msg.err),
+				Done:      true,
+				Err:       msg.err,
+			})
+			m.pendingPoolMsg = nil
+			return m, nil
+		}
+		// Image created, proceed to create the pool.
+		m.scalingView.ShowImageProgress("Image created, creating pool...")
+		poolMsg := m.pendingPoolMsg
+		m.pendingPoolMsg = nil
+		if poolMsg != nil {
+			return m, m.createNodePool(*poolMsg)
+		}
+		return m, nil
 
 	case scaling.ImportNodesMsg:
 		// Trigger node discovery.

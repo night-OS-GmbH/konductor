@@ -62,3 +62,25 @@ type importDetectMsg struct {
 type importResultMsg struct {
 	err error
 }
+
+// imageCheckMsg carries the result of checking for a Talos snapshot.
+type imageCheckMsg struct {
+	exists       bool
+	talosVersion string
+	arch         string
+	imageID      int64
+	err          error
+}
+
+// imageCreateMsg carries the result of creating a Talos snapshot.
+type imageCreateMsg struct {
+	imageID int64
+	err     error
+}
+
+// imageProgressMsg carries progress updates during image creation.
+type imageProgressMsg struct {
+	step    int
+	total   int
+	message string
+}
