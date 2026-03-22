@@ -78,20 +78,14 @@ func (p *HetznerProvider) CreateTalosImage(ctx context.Context, opts ImageCreate
 		Image:      &hcloud.Image{Name: "debian-12"},
 		Location:   &hcloud.Location{Name: opts.Location},
 		Labels:     map[string]string{"purpose": "talos-snapshot-builder"},
-		PublicNet: &hcloud.ServerCreatePublicNet{
-			EnableIPv4: true,
-			EnableIPv6: true,
-		},
+		// PublicNet intentionally omitted — Hetzner defaults to enabling
+		// public IPv4+IPv6 when the field is absent from the request.
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating temp server: %w", err)
 	}
 
 	serverID := tempServer.Server.ID
-	serverIP := ""
-	if tempServer.Server.PublicNet.IPv4.IP != nil {
-		serverIP = tempServer.Server.PublicNet.IPv4.IP.String()
-	}
 
 	// Always clean up the temporary server.
 	defer func() {
@@ -100,6 +94,37 @@ func (p *HetznerProvider) CreateTalosImage(ctx context.Context, opts ImageCreate
 		defer cleanCancel()
 		_, _, _ = p.client.api.Server.DeleteWithResult(cleanCtx, &hcloud.Server{ID: serverID})
 	}()
+
+	// Wait for server to be fully running before enabling rescue.
+	progress(1, totalSteps, "Waiting for server to be ready...")
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timeout waiting for server to start: %w", ctx.Err())
+		default:
+		}
+		srv, _, err := p.client.api.Server.GetByID(ctx, serverID)
+		if err != nil {
+			return nil, fmt.Errorf("polling server status: %w", err)
+		}
+		if srv != nil && srv.Status == hcloud.ServerStatusRunning {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	// Re-fetch server to get the assigned public IP.
+	srv, _, err := p.client.api.Server.GetByID(ctx, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("fetching server details: %w", err)
+	}
+	serverIP := ""
+	if srv.PublicNet.IPv4.IP != nil {
+		serverIP = srv.PublicNet.IPv4.IP.String()
+	}
+	if serverIP == "" {
+		return nil, fmt.Errorf("server has no public IPv4 — check Hetzner project network settings")
+	}
 
 	// Step 2: Enable rescue mode.
 	progress(2, totalSteps, "Enabling rescue mode...")
