@@ -106,7 +106,8 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			activeClaims++
 		case konductorv1alpha1.NodeClaimPhasePending,
 			konductorv1alpha1.NodeClaimPhaseProvisioning,
-			konductorv1alpha1.NodeClaimPhaseBootstrapping:
+			konductorv1alpha1.NodeClaimPhaseBootstrapping,
+			"": // Freshly created claims have empty phase until the NodeClaim controller sets it.
 			pendingClaims++
 			activeClaims++
 		case konductorv1alpha1.NodeClaimPhaseDraining,

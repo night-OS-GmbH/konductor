@@ -370,10 +370,7 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 				},
 				"spec": map[string]interface{}{
 					"provider": "hetzner",
-					"providerConfig": map[string]interface{}{
-						"serverType": msg.ServerType,
-						"location":   msg.Location,
-					},
+					"providerConfig": m.buildProviderConfig(msg.ServerType, msg.Location),
 					"minNodes": int64(msg.MinNodes),
 					"maxNodes": int64(msg.MaxNodes),
 					"scaling": map[string]interface{}{
@@ -414,6 +411,53 @@ func (m model) createNodePool(msg scaling.CreateNodePoolMsg) tea.Cmd {
 
 		return installResultMsg{component: "nodepool", err: nil}
 	}
+}
+
+// buildProviderConfig creates the providerConfig map for a new NodePool,
+// inheriting network, placementGroup, and sshKeyName from existing NodePool CRDs.
+func (m model) buildProviderConfig(serverType, location string) map[string]interface{} {
+	cfg := map[string]interface{}{
+		"serverType": serverType,
+		"location":   location,
+	}
+
+	if m.client == nil {
+		return cfg
+	}
+
+	// Read providerConfig from an existing NodePool to inherit infrastructure settings.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dynClient, err := buildDynamicClient(m.client.KubeconfigPath(), m.client.ActiveContext())
+	if err != nil {
+		return cfg
+	}
+
+	gvr := schema.GroupVersionResource{Group: "konductor.io", Version: "v1alpha1", Resource: "nodepools"}
+	list, err := dynClient.Resource(gvr).List(ctx, metav1.ListOptions{Limit: 1})
+	if err != nil || len(list.Items) == 0 {
+		return cfg
+	}
+
+	// Extract providerConfig from the first existing pool.
+	spec, ok := list.Items[0].Object["spec"].(map[string]interface{})
+	if !ok {
+		return cfg
+	}
+	existing, ok := spec["providerConfig"].(map[string]interface{})
+	if !ok {
+		return cfg
+	}
+
+	// Inherit network, placementGroup, sshKeyName from existing pool.
+	for _, key := range []string{"network", "placementGroup", "sshKeyName"} {
+		if val, exists := existing[key]; exists && val != "" {
+			cfg[key] = val
+		}
+	}
+
+	return cfg
 }
 
 // deleteNodePool deletes a NodePool CRD from the cluster.
