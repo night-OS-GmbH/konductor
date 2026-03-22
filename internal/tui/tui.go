@@ -666,7 +666,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updateNodePool(msg)
 
 	case scaling.CreateNodePoolMsg:
-		// Before creating the pool, check if the Talos image exists.
+		// Check if we have a Hetzner token for image pre-check.
+		// If not, skip the image check and create the pool directly.
+		_, provErr := m.getHetznerProvider()
+		if provErr != nil {
+			// No token available — create pool without image check.
+			return m, m.createNodePool(msg)
+		}
+		// Token available — check if the Talos image exists first.
 		m.pendingPoolMsg = &msg
 		arch := hetzner.ArchFromServerType(msg.ServerType)
 		talosVersion := m.detectTalosVersion()
