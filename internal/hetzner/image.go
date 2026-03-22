@@ -216,5 +216,5 @@ func builderServerType(arch string) string {
 	if arch == "arm64" {
 		return "cax11"
 	}
-	return "cx32"
+	return "cx23"
 }
