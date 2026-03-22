@@ -136,9 +136,10 @@ func NewEngineWithHysteresis(h *Hysteresis) *Engine {
 // and returns a Decision. The evaluation order is:
 //
 //  1. Cooldown check — if a recent scale action occurred, return NoAction.
-//  2. Pending pods — if pods are stuck pending above threshold, scale up.
-//  3. Resource pressure — if avg CPU or memory exceeds threshold, scale up.
-//  4. Underutilization — if nodes are idle long enough, scale down.
+//  2. Minimum enforcement — if nodes are below MinNodes, scale up immediately.
+//  3. Pending pods — if pods are stuck pending above threshold, scale up.
+//  4. Resource pressure — if avg CPU or memory exceeds threshold, scale up.
+//  5. Underutilization — if nodes are idle long enough, scale down.
 //
 // All decisions respect min/max node bounds.
 func (e *Engine) Evaluate(metrics ClusterMetrics, config ScalingConfig) Decision {
@@ -150,7 +151,21 @@ func (e *Engine) Evaluate(metrics ClusterMetrics, config ScalingConfig) Decision
 		}
 	}
 
-	// 2. Pending pods check (highest priority for scale-up).
+	// 2. Minimum enforcement: if current nodes are below the configured minimum,
+	// scale up immediately without waiting for threshold-based signals.
+	if metrics.TotalNodes < int(config.MinNodes) {
+		deficit := int(config.MinNodes) - metrics.TotalNodes
+		count := e.clampScaleUp(deficit, metrics.TotalNodes, int(config.MaxNodes))
+		if count > 0 {
+			return Decision{
+				Action: ScaleUp,
+				Count:  count,
+				Reason: fmt.Sprintf("current nodes (%d) below minimum (%d)", metrics.TotalNodes, config.MinNodes),
+			}
+		}
+	}
+
+	// 4. Pending pods check (highest priority for threshold-based scale-up).
 	if config.ScaleUp.PendingPodsThreshold > 0 && metrics.PendingPods >= int(config.ScaleUp.PendingPodsThreshold) {
 		// Track how long we have been seeing pending pods.
 		e.hysteresis.TrackPressure(true)
@@ -172,7 +187,7 @@ func (e *Engine) Evaluate(metrics ClusterMetrics, config ScalingConfig) Decision
 		}
 	}
 
-	// 3. Resource pressure (CPU or memory above threshold).
+	// 5. Resource pressure (CPU or memory above threshold).
 	cpuExceeded := config.ScaleUp.CPUThresholdPercent > 0 && metrics.AvgCPUPercent >= float64(config.ScaleUp.CPUThresholdPercent)
 	memExceeded := config.ScaleUp.MemoryThresholdPercent > 0 && metrics.AvgMemoryPercent >= float64(config.ScaleUp.MemoryThresholdPercent)
 
@@ -209,7 +224,7 @@ func (e *Engine) Evaluate(metrics ClusterMetrics, config ScalingConfig) Decision
 	// No scale-up pressure — reset pressure tracker.
 	e.hysteresis.TrackPressure(false)
 
-	// 4. Scale-down: find underutilized, drainable nodes.
+	// 6. Scale-down: find underutilized, drainable nodes.
 	if config.ScaleDown.CPUThresholdPercent > 0 || config.ScaleDown.MemoryThresholdPercent > 0 {
 		candidates := e.findScaleDownCandidates(metrics, config)
 		if len(candidates) > 0 {

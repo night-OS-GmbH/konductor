@@ -77,6 +77,76 @@ func newTestEngine(clock *fakeClock) *Engine {
 }
 
 // --------------------------------------------------------------------------
+// Scale-up: below minimum nodes (bootstrap)
+// --------------------------------------------------------------------------
+
+func TestScaleUp_BelowMinimum_ImmediateScaleUp(t *testing.T) {
+	clock := newFakeClock()
+	engine := newTestEngine(clock)
+	cfg := defaultConfig()
+	cfg.MinNodes = 1
+	cfg.MaxNodes = 3
+
+	// Pool has 0 nodes — should immediately scale up to min without any thresholds.
+	metrics := ClusterMetrics{
+		TotalNodes: 0,
+		ReadyNodes: 0,
+	}
+
+	d := engine.Evaluate(metrics, cfg)
+	if d.Action != ScaleUp {
+		t.Fatalf("expected ScaleUp when below minimum, got %s: %s", d.Action, d.Reason)
+	}
+	if d.Count != 1 {
+		t.Fatalf("expected count=1 (deficit to reach minNodes), got %d", d.Count)
+	}
+}
+
+func TestScaleUp_BelowMinimum_MultipleNodeDeficit(t *testing.T) {
+	clock := newFakeClock()
+	engine := newTestEngine(clock)
+	cfg := defaultConfig()
+	cfg.MinNodes = 3
+	cfg.MaxNodes = 10
+
+	// Pool has 1 node but min is 3 — should add 2.
+	metrics := ClusterMetrics{
+		TotalNodes: 1,
+		ReadyNodes: 1,
+	}
+
+	d := engine.Evaluate(metrics, cfg)
+	if d.Action != ScaleUp {
+		t.Fatalf("expected ScaleUp when below minimum, got %s: %s", d.Action, d.Reason)
+	}
+	if d.Count != 2 {
+		t.Fatalf("expected count=2 (3 min - 1 current), got %d", d.Count)
+	}
+}
+
+func TestScaleUp_BelowMinimum_ClampedByMaxNodes(t *testing.T) {
+	clock := newFakeClock()
+	engine := newTestEngine(clock)
+	cfg := defaultConfig()
+	cfg.MinNodes = 5
+	cfg.MaxNodes = 3 // misconfigured: max < min
+
+	metrics := ClusterMetrics{
+		TotalNodes: 1,
+		ReadyNodes: 1,
+	}
+
+	d := engine.Evaluate(metrics, cfg)
+	if d.Action != ScaleUp {
+		t.Fatalf("expected ScaleUp, got %s: %s", d.Action, d.Reason)
+	}
+	// Can only add up to maxNodes (3) - current (1) = 2, even though deficit is 4.
+	if d.Count != 2 {
+		t.Fatalf("expected count=2 (clamped by maxNodes), got %d", d.Count)
+	}
+}
+
+// --------------------------------------------------------------------------
 // Scale-up: pending pods
 // --------------------------------------------------------------------------
 

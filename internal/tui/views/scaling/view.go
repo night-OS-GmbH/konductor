@@ -888,6 +888,8 @@ func (m Model) viewPoolDetailFull(pool k8s.NodePoolInfo, panelW, height int) str
 	var scalingDecision string
 	if !pool.ScalingEnabled {
 		scalingDecision = dim.Render("Scaling disabled")
+	} else if pool.CurrentNodes < pool.MinNodes {
+		scalingDecision = styles.CriticalStyle.Render(fmt.Sprintf("→ Below minimum (%d/%d), scaling up", pool.CurrentNodes, pool.MinNodes))
 	} else if pool.PendingPods > 0 {
 		scalingDecision = styles.WarningStyle.Render(fmt.Sprintf("→ Would scale UP (%d pending pods)", pool.PendingPods))
 	} else if pool.AvgCPUPercent > float64(pool.ScaleUp.CPUPercent) || pool.AvgMemoryPercent > float64(pool.ScaleUp.MemoryPercent) {
