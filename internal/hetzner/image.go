@@ -78,6 +78,10 @@ func (p *HetznerProvider) CreateTalosImage(ctx context.Context, opts ImageCreate
 		Image:      &hcloud.Image{Name: "debian-12"},
 		Location:   &hcloud.Location{Name: opts.Location},
 		Labels:     map[string]string{"purpose": "talos-snapshot-builder"},
+		PublicNet: &hcloud.ServerCreatePublicNet{
+			EnableIPv4: true,
+			EnableIPv6: true,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating temp server: %w", err)
